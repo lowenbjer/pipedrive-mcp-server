@@ -55,7 +55,7 @@ const leadsApi = new pipedrive.LeadsApi(apiClient);
 // Create MCP server
 const server = new McpServer({
   name: "pipedrive-mcp-server",
-  version: "1.0.0",
+  version: "1.0.2",
   capabilities: {
     resources: {},
     tools: {},

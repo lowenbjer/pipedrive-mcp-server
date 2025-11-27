@@ -125,36 +125,27 @@ When using HTTP/SSE transport, provide credentials via the `Authorization` heade
 
 **Primary method (MCP-compliant):**
 ```
-Authorization: Bearer <base64(apiToken:domain)>
-```
-
-Or plain format:
-```
 Authorization: Bearer <apiToken>:<domain>
 ```
 
-**Fallback method (for compatibility):**
-- `X-Pipedrive-API-Token` or `X-API-Token` - Your Pipedrive API token
-- `X-Pipedrive-Domain` or `X-Domain` - Your Pipedrive domain (e.g., `your-company.pipedrive.com`)
-
-The server prioritizes the `Authorization` header per MCP specification, then falls back to custom headers if not provided.
+**MCP-compliant**: Only the `Authorization` header is supported. Custom headers and environment variables are not accepted for HTTP/SSE transport.
 
 Credentials are stored per-session, so each connection can use different credentials.
 
-#### 2. Environment Variables (Fallback)
+#### 2. Environment Variables (Stdio Transport Only)
 
-For backward compatibility or stdio transport, you can set default credentials:
+For stdio transport only, you can set default credentials as a fallback:
 
-- `PIPEDRIVE_API_TOKEN` - Your Pipedrive API token (optional)
-- `PIPEDRIVE_DOMAIN` - Your Pipedrive domain (e.g., `your-company.pipedrive.com`) (optional)
+- `PIPEDRIVE_API_TOKEN` - Your Pipedrive API token (optional, stdio only)
+- `PIPEDRIVE_DOMAIN` - Your Pipedrive domain (e.g., `your-company.pipedrive.com`) (optional, stdio only)
 
-If credentials are not provided via headers, the server will fall back to environment variables. If neither is provided, requests will fail with an error.
+**Note:** For HTTP/SSE transport, credentials must be provided via `Authorization` header in every request. Environment variables are not used.
 
 ### Environment Variables
 
-Optional (Default Credentials - for backward compatibility):
-- `PIPEDRIVE_API_TOKEN` - Default Pipedrive API token (used if not provided in headers)
-- `PIPEDRIVE_DOMAIN` - Default Pipedrive domain (used if not provided in headers)
+Optional (Stdio Transport Only - Default Credentials):
+- `PIPEDRIVE_API_TOKEN` - Default Pipedrive API token (only used for stdio transport, not HTTP/SSE)
+- `PIPEDRIVE_DOMAIN` - Default Pipedrive domain (only used for stdio transport, not HTTP/SSE)
 
 Optional (JWT Authentication):
 - `MCP_JWT_SECRET` - JWT secret for authentication
@@ -216,19 +207,13 @@ For stateless HTTP requests (simpler, no SSE connection needed):
 - **Transport**: `http` or `sse`
 - **URL**: `https://your-server.com/message` (or your Railway deployment URL)
 - **With Auth Setup**: Enabled
-- **API Key**: Use one of these formats:
-  - **Plain format**: `your-api-token:your-domain` (e.g., `abc123:mycompany.pipedrive.com`)
-  - **Base64 format**: Base64 encode `token:domain` (e.g., `echo -n "abc123:mycompany.pipedrive.com" | base64`)
+- **API Key**: Use this format:
+  - `your-api-token:your-domain` (e.g., `abc123:mycompany.pipedrive.com`)
 
 **Example:**
 If your API token is `abc123xyz` and domain is `mycompany.pipedrive.com`, send:
 ```
 Bearer abc123xyz:mycompany.pipedrive.com
-```
-
-Or base64 encoded:
-```
-Bearer YWJjMTIzeHl6Om15Y29tcGFueS5waXBlZHJpdmUuY29t
 ```
 
 See [AUTHENTICATION.md](./AUTHENTICATION.md) for detailed authentication guide.

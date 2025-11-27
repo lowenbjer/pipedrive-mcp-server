@@ -152,27 +152,39 @@ function createApiClients(apiToken: string, domain: string): SessionCredentials 
 }
 
 // Get or create session credentials
+// MCP-compliant: Credentials must be provided (no environment variable fallback for HTTP/SSE)
 function getSessionCredentials(sessionId: string, apiToken?: string, domain?: string): SessionCredentials {
   // Try to get existing session
   if (sessions.has(sessionId)) {
     return sessions.get(sessionId)!;
   }
 
-  // Use provided credentials or fall back to defaults
-  const token = apiToken || defaultApiToken;
-  const dom = domain || defaultDomain;
-
-  if (!token || !dom) {
-    throw new Error('Pipedrive API credentials are required. Provide X-Pipedrive-API-Token and X-Pipedrive-Domain headers, or set PIPEDRIVE_API_TOKEN and PIPEDRIVE_DOMAIN environment variables.');
+  // For stdio transport, allow environment variable fallback
+  if (transportType === 'stdio') {
+    const token = apiToken || defaultApiToken;
+    const dom = domain || defaultDomain;
+    
+    if (!token || !dom) {
+      throw new Error('Pipedrive API credentials are required. For stdio transport, provide via Authorization header or set PIPEDRIVE_API_TOKEN and PIPEDRIVE_DOMAIN environment variables.');
+    }
+    
+    const credentials = createApiClients(token, dom);
+    sessions.set(sessionId, credentials);
+    return credentials;
   }
 
-  const credentials = createApiClients(token, dom);
+  // For HTTP/SSE transport, credentials must be provided via Authorization header
+  if (!apiToken || !domain) {
+    throw new Error('Pipedrive API credentials are required. Provide Authorization: Bearer token:domain header in your request.');
+  }
+
+  const credentials = createApiClients(apiToken, domain);
   sessions.set(sessionId, credentials);
   return credentials;
 }
 
 // Get current session credentials from context
-// For SSE transport, we need to find the session ID from the current async context
+// MCP-compliant: Credentials must be provided via Authorization header
 function getCurrentSessionCredentials(): SessionCredentials {
   const sessionId = sessionContext.getStore();
   
@@ -182,85 +194,57 @@ function getCurrentSessionCredentials(): SessionCredentials {
     if (existing) {
       return existing;
     }
-    // Try to create with defaults if session exists but credentials not stored
-    if (defaultApiToken && defaultDomain) {
-      return getSessionCredentials(sessionId, defaultApiToken, defaultDomain);
-    }
     // If we have sessionId but no credentials, that's an error
-    throw new Error(`Session ${sessionId} exists but has no credentials. Provide credentials via Authorization header or X-Pipedrive-API-Token/X-Pipedrive-Domain headers.`);
+    throw new Error(`Session ${sessionId} exists but has no credentials. Provide credentials via Authorization: Bearer token:domain header.`);
   }
   
-  // Fallback: try stdio session (for stdio transport)
-  if (sessions.has('stdio')) {
+  // Fallback: try stdio session (for stdio transport only)
+  // Note: stdio transport should use environment variables as fallback
+  if (transportType === 'stdio' && sessions.has('stdio')) {
     return sessions.get('stdio')!;
   }
   
-  // Fallback: use default credentials
-  if (defaultApiToken && defaultDomain) {
-    return getSessionCredentials('default', defaultApiToken, defaultDomain);
-  }
-  
-  // Last resort: log available sessions for debugging
+  // For HTTP/SSE transport, credentials must be provided via Authorization header
   const availableSessions = Array.from(sessions.keys());
   console.error(`Available sessions: ${availableSessions.join(', ')}`);
   console.error(`Current context sessionId: ${sessionId || 'none'}`);
   
-  throw new Error('No session context and no default credentials available. Credentials must be provided via headers (Authorization: Bearer token:domain or X-Pipedrive-API-Token/X-Pipedrive-Domain) or environment variables (PIPEDRIVE_API_TOKEN, PIPEDRIVE_DOMAIN).');
+  throw new Error('No credentials found. MCP-compliant authentication requires Authorization: Bearer token:domain header in each request.');
 }
 
 // Extract credentials from request headers (MCP-compliant)
-// MCP spec prefers Authorization header with Bearer token
+// MCP spec requires Authorization header with Bearer token
 // 
-// Supported formats:
-// 1. Authorization: Bearer <apiToken>:<domain> (plain format)
-// 2. Authorization: Bearer <base64(apiToken:domain)> (base64 encoded)
-// 3. Authorization: Bearer <apiToken> + X-Pipedrive-Domain header
-// 4. X-Pipedrive-API-Token + X-Pipedrive-Domain headers (fallback)
+// Required format:
+// Authorization: Bearer <apiToken>:<domain> (plain text format)
 function extractCredentialsFromRequest(req: http.IncomingMessage): { apiToken?: string; domain?: string } {
   let apiToken: string | undefined;
   let domain: string | undefined;
   
-  // Primary: Check Authorization header (MCP-compliant approach)
+  // MCP-compliant: Only check Authorization header
   const authHeader = req.headers['authorization'];
-  if (authHeader) {
-    const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (match) {
-      const token = match[1];
-      
-      // Try to parse as "token:domain" format (both base64 and plain)
-      let decoded: string | null = null;
-      
-      // First, try base64 decode
-      try {
-        decoded = Buffer.from(token, 'base64').toString('utf-8');
-      } catch {
-        // Not base64, use as-is
-        decoded = token;
-      }
-      
-      // Check if decoded value contains colon (token:domain format)
-      if (decoded && decoded.includes(':')) {
-        const parts = decoded.split(':');
-        if (parts.length >= 2) {
-          apiToken = parts[0];
-          domain = parts.slice(1).join(':'); // Handle domains with colons (unlikely but safe)
-        }
-      } else {
-        // Just the token, domain must be in a separate header
-        apiToken = decoded;
-      }
-    }
+  if (!authHeader) {
+    return { apiToken, domain };
   }
   
-  // Fallback: Check custom headers (for compatibility)
-  // These can also supplement Authorization header if domain wasn't found there
-  if (!apiToken) {
-    apiToken = req.headers['x-pipedrive-api-token'] as string || 
-               req.headers['x-api-token'] as string;
+  // Handle both string and string[] (some proxies might send arrays)
+  const authValue = Array.isArray(authHeader) ? authHeader[0] : authHeader;
+  
+  const match = authValue.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    // Authorization header exists but doesn't match Bearer format
+    return { apiToken, domain };
   }
-  if (!domain) {
-    domain = req.headers['x-pipedrive-domain'] as string ||
-             req.headers['x-domain'] as string;
+  
+  const token = match[1];
+  
+  // Parse as "token:domain" format (plain text only)
+  if (token.includes(':')) {
+    const parts = token.split(':');
+    if (parts.length >= 2) {
+      apiToken = parts[0];
+      domain = parts.slice(1).join(':'); // Handle domains with colons (unlikely but safe)
+    }
   }
   
   return { apiToken, domain };
@@ -1133,8 +1117,8 @@ if (transportType === 'sse' || transportType === 'http') {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    // MCP-compliant: Authorization header is primary, custom headers for fallback
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Id, X-Pipedrive-API-Token, X-Pipedrive-Domain, X-API-Token, X-Domain');
+    // MCP-compliant: Only Authorization header is supported
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Id');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -1153,6 +1137,15 @@ if (transportType === 'sse' || transportType === 'http') {
       // Extract credentials from request headers
       const { apiToken, domain } = extractCredentialsFromRequest(req);
       
+      // Debug: Log what we extracted
+      if (apiToken || domain) {
+        console.error(`Extracted credentials - token: ${apiToken ? apiToken.substring(0, 8) + '...' : 'none'}, domain: ${domain || 'none'}`);
+      } else {
+        // Debug: Log the Authorization header value (first 50 chars for security)
+        const authHeader = req.headers['authorization'];
+        console.error(`No credentials extracted. Authorization header: ${authHeader ? authHeader.substring(0, 50) + '...' : 'missing'}`);
+      }
+      
       // Establish SSE connection
       console.error('New SSE connection request');
       const transport = new SSEServerTransport(endpoint, res);
@@ -1167,7 +1160,12 @@ if (transportType === 'sse' || transportType === 'http') {
         }
       } else {
         console.error(`Warning: No credentials provided in SSE connection request for session ${transport.sessionId}`);
-        console.error(`Headers: ${JSON.stringify(Object.keys(req.headers))}`);
+        console.error(`Available headers: ${JSON.stringify(Object.keys(req.headers))}`);
+        // Try to help debug - show if Authorization header exists
+        if (req.headers['authorization']) {
+          const authValue = req.headers['authorization'] as string;
+          console.error(`Authorization header exists but wasn't parsed. Value starts with: ${authValue.substring(0, 30)}...`);
+        }
       }
 
       // Store transport by session ID
@@ -1209,7 +1207,7 @@ if (transportType === 'sse' || transportType === 'http') {
         if (!apiToken || !domain) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ 
-            error: 'Missing credentials. Provide Authorization: Bearer token:domain or X-Pipedrive-API-Token/X-Pipedrive-Domain headers.' 
+            error: 'Missing credentials. MCP-compliant authentication requires Authorization: Bearer token:domain header.' 
           }));
           return;
         }
@@ -1358,7 +1356,7 @@ if (transportType === 'sse' || transportType === 'http') {
             console.error(`Error: No credentials found for session ${sessionId} and none provided in POST request`);
             if (!res.headersSent) {
               res.writeHead(401, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'No credentials found for this session. Provide credentials via Authorization header.' }));
+              res.end(JSON.stringify({ error: 'No credentials found for this session. Provide Authorization: Bearer token:domain header.' }));
             }
             return;
           }

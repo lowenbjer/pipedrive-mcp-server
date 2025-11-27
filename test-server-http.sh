@@ -58,6 +58,16 @@ wait_for_server() {
     return 1
 }
 
+# Function to format JSON output
+format_json() {
+    local json="$1"
+    if command -v jq > /dev/null 2>&1; then
+        echo "$json" | jq '.' 2>/dev/null || echo "$json"
+    else
+        echo "$json"
+    fi
+}
+
 # Function to run a test
 run_test() {
     local test_name="$1"
@@ -88,12 +98,94 @@ run_test() {
     if [ "$http_code" = "$expected_status" ]; then
         echo -e "${GREEN}✓ Passed (HTTP ${http_code})${NC}"
         if [ ! -z "$body" ] && [ "$body" != "null" ]; then
-            echo "Response: $(echo "$body" | head -c 200)..."
+            echo -e "${YELLOW}Response:${NC}"
+            format_json "$body" | head -n 50
+            if [ $(echo "$body" | wc -l) -gt 50 ] || [ ${#body} -gt 2000 ]; then
+                echo -e "${YELLOW}... (truncated)${NC}"
+            fi
         fi
         return 0
     else
         echo -e "${RED}✗ Failed (Expected HTTP ${expected_status}, got ${http_code})${NC}"
-        echo "Response: $body"
+        echo -e "${YELLOW}Response:${NC}"
+        format_json "$body"
+        return 1
+    fi
+}
+
+# Function to send MCP JSON-RPC message and get response
+send_mcp_message() {
+    local method="$1"
+    local params="$2"
+    local message_id="${3:-$(date +%s)}"
+    
+    local jsonrpc_message="{\"jsonrpc\":\"2.0\",\"id\":${message_id},\"method\":\"${method}\",\"params\":${params}}"
+    
+    local response=$(curl -s -w '\nHTTP_CODE:%{http_code}' -X POST \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: ${AUTH_HEADER}" \
+        -d "${jsonrpc_message}" \
+        "${BASE_URL}${ENDPOINT}")
+    
+    local http_code=$(echo "$response" | grep "HTTP_CODE" | cut -d: -f2)
+    local body=$(echo "$response" | sed '/HTTP_CODE/d')
+    
+    if [ "$http_code" = "200" ]; then
+        echo "$body"
+        return 0
+    else
+        echo "Error: HTTP $http_code - $body" >&2
+        return 1
+    fi
+}
+
+# Function to test MCP tool call
+test_tool_call() {
+    local test_name="$1"
+    local tool_name="$2"
+    local tool_params="$3"
+    
+    echo -e "\n${YELLOW}Test: ${test_name}${NC}"
+    
+    local response=$(send_mcp_message "tools/call" "{\"name\":\"${tool_name}\",\"arguments\":${tool_params}}")
+    
+    if [ $? -eq 0 ]; then
+        # Check if response has error
+        if echo "$response" | grep -q '"error"'; then
+            echo -e "${RED}✗ Failed: Tool returned error${NC}"
+            echo -e "${YELLOW}Response:${NC}"
+            format_json "$response"
+            return 1
+        fi
+        
+        # Check if response has result
+        if echo "$response" | grep -q '"result"'; then
+            echo -e "${GREEN}✓ Passed${NC}"
+            echo -e "${YELLOW}Response:${NC}"
+            format_json "$response" | head -n 100
+            if [ $(echo "$response" | wc -l) -gt 100 ] || [ ${#response} -gt 5000 ]; then
+                echo -e "${YELLOW}... (truncated)${NC}"
+            fi
+            
+            # Try to extract and show some useful info
+            if command -v jq > /dev/null 2>&1; then
+                local content_type=$(echo "$response" | jq -r '.result.content[0].type // empty' 2>/dev/null)
+                local is_error=$(echo "$response" | jq -r '.result.content[0].isError // false' 2>/dev/null)
+                if [ "$is_error" = "true" ]; then
+                    echo -e "${YELLOW}⚠ Warning: Response indicates error${NC}"
+                fi
+                if [ ! -z "$content_type" ]; then
+                    echo -e "${GREEN}Content type: ${content_type}${NC}"
+                fi
+            fi
+            return 0
+        else
+            echo -e "${RED}✗ Failed: No result in response${NC}"
+            echo -e "${YELLOW}Response:${NC}"
+            format_json "$response"
+            return 1
+        fi
+    else
         return 1
     fi
 }
@@ -152,6 +244,40 @@ run_test "POST /message (missing colon)" "${BASE_URL}${ENDPOINT}" "POST" "-H 'Co
 
 # Test 6: POST with initialize method
 run_test "POST /message (initialize)" "${BASE_URL}${ENDPOINT}" "POST" "-H 'Content-Type: application/json' -H 'Authorization: ${AUTH_HEADER}'" '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}' "200" || FAILED_TESTS=$((FAILED_TESTS + 1))
+
+# Test 7: List available tools
+echo -e "\n${YELLOW}Test: List Tools${NC}"
+TOOLS_RESPONSE=$(send_mcp_message "tools/list" "{}" "100")
+if [ $? -eq 0 ] && echo "$TOOLS_RESPONSE" | grep -q '"result"'; then
+    echo -e "${GREEN}✓ Passed${NC}"
+    if command -v jq > /dev/null 2>&1; then
+        TOOL_COUNT=$(echo "$TOOLS_RESPONSE" | jq '.result.tools | length' 2>/dev/null)
+        echo -e "${GREEN}Found ${TOOL_COUNT} tool(s):${NC}"
+        echo "$TOOLS_RESPONSE" | jq -r '.result.tools[] | "  - \(.name): \(.description // "No description")"' 2>/dev/null | head -n 10
+    else
+        TOOL_COUNT=$(echo "$TOOLS_RESPONSE" | grep -o '"name"' | wc -l | tr -d ' ')
+        echo "Found ${TOOL_COUNT} tool(s)"
+        echo -e "${YELLOW}Response:${NC}"
+        format_json "$TOOLS_RESPONSE" | head -n 30
+    fi
+else
+    echo -e "${RED}✗ Failed${NC}"
+    echo -e "${YELLOW}Response:${NC}"
+    format_json "$TOOLS_RESPONSE"
+    FAILED_TESTS=$((FAILED_TESTS + 1))
+fi
+
+# Test 8: Call get-users tool
+test_tool_call "Call get-users tool" "get-users" "{}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+
+# Test 9: Call get-pipelines tool
+test_tool_call "Call get-pipelines tool" "get-pipelines" "{}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+
+# Test 10: Call get-stages tool
+test_tool_call "Call get-stages tool" "get-stages" "{}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+
+# Test 11: Call get-deals tool (with limit)
+test_tool_call "Call get-deals tool (limit 5)" "get-deals" "{\"limit\":5}" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
 # Summary
 echo -e "\n${GREEN}=== Test Summary ===${NC}"

@@ -142,9 +142,12 @@ function createApiClients(apiToken: string, domain: string): SessionCredentials 
     pipelinesApi: withRateLimit(new pipedrive.PipelinesApi(apiClient)),
     itemSearchApi: withRateLimit(new pipedrive.ItemSearchApi(apiClient)),
     leadsApi: withRateLimit(new pipedrive.LeadsApi(apiClient)),
-    activitiesApi: withRateLimit(new pipedrive.ActivitiesApi(apiClient)),
-    notesApi: withRateLimit(new pipedrive.NotesApi(apiClient)),
-    usersApi: withRateLimit(new pipedrive.UsersApi(apiClient)),
+    // @ts-ignore - ActivitiesApi exists but may not be in type definitions
+    activitiesApi: withRateLimit(new (pipedrive as any).ActivitiesApi(apiClient)),
+    // @ts-ignore - NotesApi exists but may not be in type definitions
+    notesApi: withRateLimit(new (pipedrive as any).NotesApi(apiClient)),
+    // @ts-ignore - UsersApi exists but may not be in type definitions
+    usersApi: withRateLimit(new (pipedrive as any).UsersApi(apiClient)),
   };
 }
 

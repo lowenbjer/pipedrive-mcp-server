@@ -154,8 +154,11 @@ function createApiClients(apiToken: string, domain: string): SessionCredentials 
 // Get or create session credentials
 // MCP-compliant: Credentials must be provided (no environment variable fallback for HTTP/SSE)
 function getSessionCredentials(sessionId: string, apiToken?: string, domain?: string): SessionCredentials {
+  console.error(`[DEBUG] getSessionCredentials called - sessionId: ${sessionId}, hasToken: ${!!apiToken}, hasDomain: ${!!domain}`);
+  
   // Try to get existing session
   if (sessions.has(sessionId)) {
+    console.error(`[DEBUG] Using existing session credentials for ${sessionId}`);
     return sessions.get(sessionId)!;
   }
 
@@ -165,9 +168,11 @@ function getSessionCredentials(sessionId: string, apiToken?: string, domain?: st
     const dom = domain || defaultDomain;
     
     if (!token || !dom) {
+      console.error('[DEBUG] Stdio transport: Missing credentials (no token or domain)');
       throw new Error('Pipedrive API credentials are required. For stdio transport, provide via Authorization header or set PIPEDRIVE_API_TOKEN and PIPEDRIVE_DOMAIN environment variables.');
     }
     
+    console.error(`[DEBUG] Creating new stdio session credentials for ${sessionId}`);
     const credentials = createApiClients(token, dom);
     sessions.set(sessionId, credentials);
     return credentials;
@@ -175,11 +180,14 @@ function getSessionCredentials(sessionId: string, apiToken?: string, domain?: st
 
   // For HTTP/SSE transport, credentials must be provided via Authorization header
   if (!apiToken || !domain) {
+    console.error('[DEBUG] HTTP/SSE transport: Missing credentials in request');
     throw new Error('Pipedrive API credentials are required. Provide Authorization: Bearer token:domain header in your request.');
   }
 
+  console.error(`[DEBUG] Creating new HTTP/SSE session credentials for ${sessionId} (domain: ${domain})`);
   const credentials = createApiClients(apiToken, domain);
   sessions.set(sessionId, credentials);
+  console.error(`[DEBUG] Session ${sessionId} credentials created and stored. Total sessions: ${sessions.size}`);
   return credentials;
 }
 
@@ -187,27 +195,31 @@ function getSessionCredentials(sessionId: string, apiToken?: string, domain?: st
 // MCP-compliant: Credentials must be provided via Authorization header
 function getCurrentSessionCredentials(): SessionCredentials {
   const sessionId = sessionContext.getStore();
+  console.error(`[DEBUG] getCurrentSessionCredentials called - sessionId from context: ${sessionId || 'none'}`);
   
   // If we have a session ID from context, use it
   if (sessionId) {
     const existing = sessions.get(sessionId);
     if (existing) {
+      console.error(`[DEBUG] Found existing credentials for session ${sessionId}`);
       return existing;
     }
     // If we have sessionId but no credentials, that's an error
+    console.error(`[DEBUG] Session ${sessionId} exists in context but no credentials found in sessions map`);
     throw new Error(`Session ${sessionId} exists but has no credentials. Provide credentials via Authorization: Bearer token:domain header.`);
   }
   
   // Fallback: try stdio session (for stdio transport only)
   // Note: stdio transport should use environment variables as fallback
   if (transportType === 'stdio' && sessions.has('stdio')) {
+    console.error('[DEBUG] Using stdio session credentials (fallback)');
     return sessions.get('stdio')!;
   }
   
   // For HTTP/SSE transport, credentials must be provided via Authorization header
   const availableSessions = Array.from(sessions.keys());
-  console.error(`Available sessions: ${availableSessions.join(', ')}`);
-  console.error(`Current context sessionId: ${sessionId || 'none'}`);
+  console.error(`[DEBUG] No session context found. Available sessions: ${availableSessions.join(', ') || 'none'}`);
+  console.error(`[DEBUG] Current context sessionId: ${sessionId || 'none'}, transportType: ${transportType}`);
   
   throw new Error('No credentials found. MCP-compliant authentication requires Authorization: Bearer token:domain header in each request.');
 }
@@ -224,19 +236,23 @@ function extractCredentialsFromRequest(req: http.IncomingMessage): { apiToken?: 
   // MCP-compliant: Only check Authorization header
   const authHeader = req.headers['authorization'];
   if (!authHeader) {
+    console.error('[DEBUG] No Authorization header found in request');
     return { apiToken, domain };
   }
   
   // Handle both string and string[] (some proxies might send arrays)
   const authValue = Array.isArray(authHeader) ? authHeader[0] : authHeader;
+  console.error(`[DEBUG] Authorization header found: ${authValue.substring(0, 50)}...`);
   
   const match = authValue.match(/^Bearer\s+(.+)$/i);
   if (!match) {
     // Authorization header exists but doesn't match Bearer format
+    console.error('[DEBUG] Authorization header does not match Bearer format');
     return { apiToken, domain };
   }
   
   const token = match[1];
+  console.error(`[DEBUG] Extracted token from Bearer: ${token.substring(0, 30)}...`);
   
   // Parse as "token:domain" format (plain text only)
   if (token.includes(':')) {
@@ -244,7 +260,12 @@ function extractCredentialsFromRequest(req: http.IncomingMessage): { apiToken?: 
     if (parts.length >= 2) {
       apiToken = parts[0];
       domain = parts.slice(1).join(':'); // Handle domains with colons (unlikely but safe)
+      console.error(`[DEBUG] Parsed credentials - token: ${apiToken ? apiToken.substring(0, 8) + '...' : 'none'}, domain: ${domain || 'none'}`);
+    } else {
+      console.error('[DEBUG] Token contains colon but could not parse into token:domain format');
     }
+  } else {
+    console.error('[DEBUG] Token does not contain colon separator (token:domain format expected)');
   }
   
   return { apiToken, domain };
@@ -270,7 +291,9 @@ server.tool(
   {},
   async () => {
     try {
+      console.error('[DEBUG] Tool called: get-users');
       const credentials = getCurrentSessionCredentials();
+      console.error('[DEBUG] get-users: Credentials retrieved, calling Pipedrive API');
       const response = await credentials.usersApi.getUsers();
       const users = response.data?.map((user: any) => ({
         id: user.id,
@@ -1135,36 +1158,30 @@ if (transportType === 'sse' || transportType === 'http') {
       }
 
       // Extract credentials from request headers
+      console.error(`[DEBUG] SSE connection request - URL: ${req.url}, method: ${req.method}`);
       const { apiToken, domain } = extractCredentialsFromRequest(req);
       
-      // Debug: Log what we extracted
-      if (apiToken || domain) {
-        console.error(`Extracted credentials - token: ${apiToken ? apiToken.substring(0, 8) + '...' : 'none'}, domain: ${domain || 'none'}`);
-      } else {
-        // Debug: Log the Authorization header value (first 50 chars for security)
-        const authHeader = req.headers['authorization'];
-        console.error(`No credentials extracted. Authorization header: ${authHeader ? authHeader.substring(0, 50) + '...' : 'missing'}`);
-      }
-      
       // Establish SSE connection
-      console.error('New SSE connection request');
       const transport = new SSEServerTransport(endpoint, res);
+      console.error(`[DEBUG] SSE transport created - sessionId: ${transport.sessionId}`);
 
       // Store credentials for this session if provided
       if (apiToken && domain) {
         try {
           getSessionCredentials(transport.sessionId, apiToken, domain);
-          console.error(`Credentials stored for session: ${transport.sessionId} (token: ${apiToken.substring(0, 8)}..., domain: ${domain})`);
+          console.error(`[DEBUG] ✅ Credentials stored for SSE session: ${transport.sessionId} (domain: ${domain})`);
         } catch (err) {
-          console.error('Failed to store credentials:', err);
+          console.error(`[DEBUG] ❌ Failed to store credentials for session ${transport.sessionId}:`, err);
         }
       } else {
-        console.error(`Warning: No credentials provided in SSE connection request for session ${transport.sessionId}`);
-        console.error(`Available headers: ${JSON.stringify(Object.keys(req.headers))}`);
+        console.error(`[DEBUG] ⚠️  No credentials provided in SSE connection request for session ${transport.sessionId}`);
+        console.error(`[DEBUG] Available headers: ${JSON.stringify(Object.keys(req.headers))}`);
         // Try to help debug - show if Authorization header exists
         if (req.headers['authorization']) {
-          const authValue = req.headers['authorization'] as string;
-          console.error(`Authorization header exists but wasn't parsed. Value starts with: ${authValue.substring(0, 30)}...`);
+          const authValue = Array.isArray(req.headers['authorization']) 
+            ? req.headers['authorization'][0] 
+            : req.headers['authorization'];
+          console.error(`[DEBUG] Authorization header exists but wasn't parsed. Value: ${authValue.substring(0, 50)}...`);
         }
       }
 
@@ -1172,19 +1189,21 @@ if (transportType === 'sse' || transportType === 'http') {
       transports.set(transport.sessionId, transport);
 
       transport.onclose = () => {
-        console.error(`SSE connection closed: ${transport.sessionId}`);
+        console.error(`[DEBUG] SSE connection closed: ${transport.sessionId}`);
         transports.delete(transport.sessionId);
         sessions.delete(transport.sessionId);
+        console.error(`[DEBUG] Cleaned up session ${transport.sessionId}. Remaining sessions: ${sessions.size}`);
       };
 
       try {
         // Wrap server connection in session context
+        console.error(`[DEBUG] Connecting server to SSE transport for session ${transport.sessionId}`);
         await sessionContext.run(transport.sessionId, async () => {
           await server.connect(transport);
         });
-        console.error(`SSE connection established: ${transport.sessionId}`);
+        console.error(`[DEBUG] ✅ SSE connection established: ${transport.sessionId}`);
       } catch (err) {
-        console.error('Failed to establish SSE connection:', err);
+        console.error(`[DEBUG] ❌ Failed to establish SSE connection for session ${transport.sessionId}:`, err);
         transports.delete(transport.sessionId);
         sessions.delete(transport.sessionId);
       }
@@ -1197,13 +1216,16 @@ if (transportType === 'sse' || transportType === 'http') {
       }
 
       // Extract credentials from request headers (required for HTTP mode, optional for SSE)
+      console.error(`[DEBUG] POST request to ${endpoint} - URL: ${req.url}`);
       const { apiToken, domain } = extractCredentialsFromRequest(req);
       
       // Handle incoming message
       const sessionId = url.searchParams.get('sessionId') || req.headers['x-session-id'] as string;
+      console.error(`[DEBUG] POST request - sessionId: ${sessionId || 'none'}, hasCredentials: ${!!(apiToken && domain)}`);
 
       // For HTTP mode: credentials are required in every request, sessionId is optional
       if (transportType === 'http') {
+        console.error('[DEBUG] Processing HTTP mode request');
         if (!apiToken || !domain) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ 

@@ -367,12 +367,8 @@ server.tool(
         const searchResponse = await credentials.dealsApi.searchDeals(searchTitle);
         filteredDeals = searchResponse.data || [];
       } else {
-        // Calculate the date filter (daysBack days ago)
-        const filterDate = new Date();
-        //filterDate.setDate(filterDate.getDate() - daysBack);
-        const startDate = filterDate.toISOString().split('T')[0]; // Format as YYYY-MM-DD
-
         // Build API parameters (using actual Pipedrive API parameter names)
+        // Note: Date filtering is done client-side after fetching deals
         const params: any = {
           sort: 'last_activity_date DESC',
           status: status,
@@ -393,14 +389,16 @@ server.tool(
       // Apply additional client-side filtering
 
       // Filter by date if not searching by title
-      if (!searchTitle) {
+      if (!searchTitle && daysBack) {
         const filterDate = new Date();
         filterDate.setDate(filterDate.getDate() - daysBack);
 
         filteredDeals = filteredDeals.filter((deal: any) => {
-          if (!deal.last_activity_date) return false;
-          const dealActivityDate = new Date(deal.last_activity_date);
-          return dealActivityDate >= filterDate;
+          // Use last_activity_date if available, otherwise fall back to add_time (creation date)
+          const dealDate = deal.last_activity_date || deal.add_time;
+          if (!dealDate) return false; // Skip deals with no date information
+          const dealDateObj = new Date(dealDate);
+          return dealDateObj >= filterDate;
         });
       }
 

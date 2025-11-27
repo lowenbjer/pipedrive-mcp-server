@@ -437,6 +437,42 @@ server.tool(
         filteredDeals = filteredDeals.slice(0, limit);
       }
 
+      // Build lookup maps for stage and pipeline names
+      const stageNameMap = new Map<number, string>();
+      const pipelineNameMap = new Map<number, string>();
+      
+      // Collect unique stage_ids and pipeline_ids
+      const uniqueStageIds = new Set<number>();
+      const uniquePipelineIds = new Set<number>();
+      filteredDeals.forEach((deal: any) => {
+        if (deal.stage_id) uniqueStageIds.add(deal.stage_id);
+        if (deal.pipeline_id) uniquePipelineIds.add(deal.pipeline_id);
+      });
+
+      // Fetch all pipelines
+      try {
+        const pipelinesResponse = await credentials.pipelinesApi.getPipelines();
+        const pipelines = pipelinesResponse.data || [];
+        pipelines.forEach((pipeline: any) => {
+          if (pipeline.id) pipelineNameMap.set(pipeline.id, pipeline.name || 'Unknown');
+        });
+      } catch (e) {
+        console.error('[DEBUG] Error fetching pipelines for name lookup:', e);
+      }
+
+      // Fetch stages for each pipeline
+      for (const pipelineId of uniquePipelineIds) {
+        try {
+          const stagesResponse = await credentials.stagesApi.getStages({ pipeline_id: pipelineId });
+          const stages = Array.isArray(stagesResponse?.data) ? stagesResponse.data : [];
+          stages.forEach((stage: any) => {
+            if (stage.id) stageNameMap.set(stage.id, stage.name || 'Unknown');
+          });
+        } catch (e) {
+          console.error(`[DEBUG] Error fetching stages for pipeline ${pipelineId}:`, e);
+        }
+      }
+
       // Build filter summary for response
       const filterSummary = {
         ...(searchTitle && { search_title: searchTitle }),
@@ -460,11 +496,13 @@ server.tool(
         value: deal.value,
         currency: deal.currency,
         status: deal.status,
-        stage_name: deal.stage?.name || 'Unknown',
-        pipeline_name: deal.pipeline?.name || 'Unknown',
-        owner_name: deal.owner?.name || 'Unknown',
-        organization_name: deal.org?.name || null,
-        person_name: deal.person?.name || null,
+        stage_id: deal.stage_id,
+        stage_name: deal.stage_id ? (stageNameMap.get(deal.stage_id) || 'Unknown') : null,
+        pipeline_id: deal.pipeline_id,
+        pipeline_name: deal.pipeline_id ? (pipelineNameMap.get(deal.pipeline_id) || 'Unknown') : null,
+        owner_name: deal.owner?.name || deal.owner_name || 'Unknown',
+        organization_name: deal.org?.name || deal.org_name || null,
+        person_name: deal.person?.name || deal.person_name || null,
         add_time: deal.add_time,
         last_activity_date: deal.last_activity_date,
         close_time: deal.close_time,

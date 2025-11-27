@@ -354,7 +354,9 @@ server.tool(
     try {
       let filteredDeals: any[] = [];
 
+      console.error(`[DEBUG] Tool called: get-deals (searchTitle: ${searchTitle || 'none'}, daysBack: ${daysBack}, ownerId: ${ownerId || 'none'})`);
       const credentials = getCurrentSessionCredentials();
+      console.error('[DEBUG] get-deals: Credentials retrieved, calling Pipedrive API');
       
       // If searching by title, use the search API first
       if (searchTitle) {

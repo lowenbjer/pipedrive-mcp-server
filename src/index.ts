@@ -311,7 +311,15 @@ server.tool(
           type: "text",
           text: JSON.stringify({
             summary: `Found ${users.length} users in your Pipedrive account`,
-            users: users
+            users: users,
+            _presentation: {
+              recommended_view: "list",
+              description: "Display users as a simple list or table",
+              key_fields: ["name", "email", "active_flag"],
+              secondary_fields: ["id", "role_name"],
+              sort_by_options: ["name", "email"],
+              default_sort: ["name", "asc"]
+            }
           }, null, 2)
         }]
       };
@@ -524,7 +532,22 @@ server.tool(
               : `Found ${filteredDeals.length} deals matching the specified filters`,
             filters_applied: filterSummary,
             total_found: filteredDeals.length,
-            deals: summarizedDeals.slice(0, 30) // Limit to 30 deals max to prevent huge responses
+            deals: summarizedDeals.slice(0, 30), // Limit to 30 deals max to prevent huge responses
+            _presentation: {
+              recommended_view: "table",
+              description: "Display deals in a table format with key columns visible",
+              key_fields: ["title", "value", "currency", "stage_name", "pipeline_name", "owner_name", "status"],
+              secondary_fields: ["person_name", "organization_name", "add_time", "last_activity_date"],
+              group_by_options: ["pipeline_name", "stage_name", "owner_name", "status"],
+              sort_by_options: ["value", "last_activity_date", "add_time", "title"],
+              default_sort: ["last_activity_date", "desc"],
+              highlight_fields: {
+                "value": "numeric",
+                "status": "badge",
+                "stage_name": "badge"
+              },
+              filters_available: ["status", "pipeline_name", "stage_name", "owner_name"]
+            }
           }, null, 2)
         }]
       };
@@ -654,10 +677,23 @@ server.tool(
       const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
       const response = await credentials.dealsApi.searchDeals(term);
+      const deals = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${deals.length} deals matching search term "${term}"`,
+            search_term: term,
+            deals: deals,
+            _presentation: {
+              recommended_view: "table",
+              description: "Display search results in a table format",
+              key_fields: ["title", "value", "currency", "stage_name", "pipeline_name", "owner_name"],
+              secondary_fields: ["id", "status", "person_name", "organization_name"],
+              sort_by_options: ["relevance", "value", "last_activity_date"],
+              highlight_search_term: term
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -848,10 +884,23 @@ server.tool(
     try {
       const credentials = getCurrentSessionCredentials();
       const response = await credentials.personsApi.getPersons();
+      const persons = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${persons.length} persons in your Pipedrive account`,
+            persons: persons,
+            _presentation: {
+              recommended_view: "table",
+              description: "Display persons/contacts in a table format",
+              key_fields: ["name", "email", "phone", "organization_name", "owner_name"],
+              secondary_fields: ["id", "open_deals_count", "closed_deals_count", "add_time"],
+              group_by_options: ["organization_name", "owner_name"],
+              sort_by_options: ["name", "add_time", "open_deals_count"],
+              default_sort: ["name", "asc"]
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -910,10 +959,23 @@ server.tool(
       const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
       const response = await credentials.personsApi.searchPersons(term);
+      const persons = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${persons.length} persons matching search term "${term}"`,
+            search_term: term,
+            persons: persons,
+            _presentation: {
+              recommended_view: "list",
+              description: "Display search results as a list or table",
+              key_fields: ["name", "email", "phone", "organization_name"],
+              secondary_fields: ["id", "open_deals_count"],
+              sort_by_options: ["relevance", "name"],
+              highlight_search_term: term
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -1084,10 +1146,23 @@ server.tool(
     try {
       const credentials = getCurrentSessionCredentials();
       const response = await credentials.organizationsApi.getOrganizations();
+      const organizations = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${organizations.length} organizations in your Pipedrive account`,
+            organizations: organizations,
+            _presentation: {
+              recommended_view: "table",
+              description: "Display organizations in a table format",
+              key_fields: ["name", "owner_name", "open_deals_count", "closed_deals_count"],
+              secondary_fields: ["id", "address", "add_time", "update_time"],
+              group_by_options: ["owner_name"],
+              sort_by_options: ["name", "open_deals_count", "add_time"],
+              default_sort: ["name", "asc"]
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -1146,10 +1221,23 @@ server.tool(
       const credentials = getCurrentSessionCredentials();
       // @ts-ignore - API method exists but TypeScript definition is wrong
       const response = await (credentials.organizationsApi as any).searchOrganization({ term });
+      const organizations = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${organizations.length} organizations matching search term "${term}"`,
+            search_term: term,
+            organizations: organizations,
+            _presentation: {
+              recommended_view: "list",
+              description: "Display search results as a list or table",
+              key_fields: ["name", "owner_name", "open_deals_count"],
+              secondary_fields: ["id", "address"],
+              sort_by_options: ["relevance", "name"],
+              highlight_search_term: term
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -1174,10 +1262,22 @@ server.tool(
     try {
       const credentials = getCurrentSessionCredentials();
       const response = await credentials.pipelinesApi.getPipelines();
+      const pipelines = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${pipelines.length} pipeline(s) in your Pipedrive account`,
+            pipelines: pipelines,
+            _presentation: {
+              recommended_view: "list",
+              description: "Display pipelines as a simple list or cards",
+              key_fields: ["name", "id", "active", "deal_probability"],
+              secondary_fields: ["order_nr", "add_time"],
+              sort_by_options: ["order_nr", "name"],
+              default_sort: ["order_nr", "asc"]
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -1271,7 +1371,20 @@ server.tool(
           type: "text",
           text: JSON.stringify({
             summary: `Found ${allStages.length} stages across ${pipelines.length} pipeline(s)`,
-            stages: allStages
+            stages: allStages,
+            _presentation: {
+              recommended_view: "grouped_table",
+              description: "Display stages grouped by pipeline, showing the pipeline workflow",
+              key_fields: ["name", "pipeline_name", "order_nr", "deal_probability"],
+              secondary_fields: ["id", "pipeline_id", "active_flag", "rotten_flag"],
+              group_by: "pipeline_name",
+              sort_by_options: ["pipeline_name", "order_nr"],
+              default_sort: ["pipeline_name", "asc", "order_nr", "asc"],
+              highlight_fields: {
+                "deal_probability": "percentage",
+                "active_flag": "badge"
+              }
+            }
           }, null, 2)
         }]
       };
@@ -1336,7 +1449,19 @@ server.tool(
             summary: `Found ${stages.length} stages in pipeline "${pipelineName}"`,
             pipeline_id: pipelineId,
             pipeline_name: pipelineName,
-            stages: stages
+            stages: stages,
+            _presentation: {
+              recommended_view: "kanban",
+              description: "Display stages as a kanban board or ordered list showing the pipeline workflow",
+              key_fields: ["name", "order_nr", "deal_probability"],
+              secondary_fields: ["id", "active_flag", "rotten_flag", "rotten_days"],
+              sort_by: ["order_nr", "asc"],
+              highlight_fields: {
+                "deal_probability": "percentage",
+                "active_flag": "badge"
+              },
+              visualization_note: "Stages are ordered by order_nr, representing the typical deal flow through the pipeline"
+            }
           }, null, 2)
         }]
       };
@@ -1490,10 +1615,23 @@ server.tool(
       const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
       const response = await credentials.leadsApi.searchLeads(term);
+      const leads = response.data || [];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${leads.length} leads matching search term "${term}"`,
+            search_term: term,
+            leads: leads,
+            _presentation: {
+              recommended_view: "table",
+              description: "Display search results in a table format",
+              key_fields: ["title", "value", "currency", "owner_name", "person_name", "organization_name"],
+              secondary_fields: ["id", "expected_close_date", "label_ids"],
+              sort_by_options: ["relevance", "value", "expected_close_date"],
+              highlight_search_term: term
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -1724,10 +1862,25 @@ server.tool(
         term,
         itemType 
       });
+      const searchResults = response.data || {};
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(response.data, null, 2)
+          text: JSON.stringify({
+            summary: `Search results for term "${term}"${itemType ? ` (filtered by: ${itemType})` : ''}`,
+            search_term: term,
+            item_type_filter: itemType || "all",
+            results: searchResults,
+            _presentation: {
+              recommended_view: "grouped_list",
+              description: "Display search results grouped by item type (deals, persons, organizations, etc.)",
+              key_fields: ["title", "name", "value", "type"],
+              group_by: "item_type",
+              sort_by_options: ["relevance", "type"],
+              highlight_search_term: term,
+              note: "Results may contain multiple item types. Group by 'item_type' or 'type' field to organize results."
+            }
+          }, null, 2)
         }]
       };
     } catch (error) {

@@ -21,6 +21,7 @@ BASE_URL="http://localhost:${PORT}"
 TEST_API_TOKEN="${TEST_API_TOKEN:-test-token-12345}"
 TEST_DOMAIN="${TEST_DOMAIN:-testcompany.pipedrive.com}"
 AUTH_HEADER="Bearer ${TEST_API_TOKEN}:${TEST_DOMAIN}"
+echo "auth header: ${AUTH_HEADER}"
 
 # Server process ID
 SERVER_PID=""
@@ -278,6 +279,235 @@ test_tool_call "Call get-stages tool" "get-stages" "{}" || FAILED_TESTS=$((FAILE
 
 # Test 11: Call get-deals tool (with limit)
 test_tool_call "Call get-deals tool (limit 5)" "get-deals" "{\"limit\":5}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+
+# Test 12: Get pipeline stages (if pipelines exist)
+echo -e "\n${YELLOW}Test: Get Pipeline Stages${NC}"
+PIPELINES_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"get-pipelines\",\"arguments\":{}}" "200")
+if [ $? -eq 0 ] && echo "$PIPELINES_RESPONSE" | grep -q '"result"'; then
+    if command -v jq > /dev/null 2>&1; then
+        # Extract the JSON text from the response and parse it
+        PIPELINES_JSON=$(echo "$PIPELINES_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+        if [ ! -z "$PIPELINES_JSON" ] && [ "$PIPELINES_JSON" != "null" ]; then
+            # Try to parse as JSON and get first pipeline ID
+            FIRST_PIPELINE_ID=$(echo "$PIPELINES_JSON" | jq -r 'if type == "array" then (.[0].id // empty) elif type == "object" and has("data") then (.data[0].id // empty) else empty end' 2>/dev/null)
+            if [ ! -z "$FIRST_PIPELINE_ID" ] && [ "$FIRST_PIPELINE_ID" != "null" ]; then
+                test_tool_call "Get stages for pipeline $FIRST_PIPELINE_ID" "get-pipeline-stages" "{\"pipelineId\":${FIRST_PIPELINE_ID}}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+            else
+                echo -e "${YELLOW}⚠ Skipped: No pipeline ID found in response${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠ Skipped: Could not extract pipelines JSON${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ Skipped: jq not available for parsing pipeline ID${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ Skipped: Could not get pipelines${NC}"
+fi
+
+# Test 13-15: CRUD operations for Deals
+echo -e "\n${YELLOW}=== Testing Deal CRUD Operations ===${NC}"
+
+# Test 13: Create a test deal
+echo -e "\n${YELLOW}Test: Create Deal${NC}"
+CREATE_DEAL_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"create-deal\",\"arguments\":{\"title\":\"Test Deal $(date +%s)\"}}" "201")
+if [ $? -eq 0 ] && echo "$CREATE_DEAL_RESPONSE" | grep -q '"result"'; then
+    # Check if there's an error in the response
+    if echo "$CREATE_DEAL_RESPONSE" | grep -q '"isError"'; then
+        echo -e "${RED}✗ Failed: Deal creation returned error${NC}"
+        format_json "$CREATE_DEAL_RESPONSE"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    else
+        # Parse the JSON text content to check for success
+        if command -v jq > /dev/null 2>&1; then
+            DEAL_JSON=$(echo "$CREATE_DEAL_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+            SUCCESS=$(echo "$DEAL_JSON" | jq -r '.success // false' 2>/dev/null)
+            if [ "$SUCCESS" = "true" ]; then
+                echo -e "${GREEN}✓ Passed${NC}"
+                CREATED_DEAL_ID=$(echo "$DEAL_JSON" | jq -r '.deal.id // empty' 2>/dev/null)
+                echo "Created deal ID: ${CREATED_DEAL_ID}"
+                
+                # Test 14: Update the deal (if creation succeeded)
+                if [ ! -z "$CREATED_DEAL_ID" ] && [ "$CREATED_DEAL_ID" != "null" ]; then
+                    test_tool_call "Update deal $CREATED_DEAL_ID" "update-deal" "{\"dealId\":${CREATED_DEAL_ID},\"title\":\"Updated Test Deal $(date +%s)\"}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+                    
+                    # Test 15: Delete the deal
+                    test_tool_call "Delete deal $CREATED_DEAL_ID" "delete-deal" "{\"dealId\":${CREATED_DEAL_ID}}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+                fi
+            else
+                echo -e "${RED}✗ Failed: Deal creation did not return success${NC}"
+                format_json "$CREATE_DEAL_RESPONSE"
+                FAILED_TESTS=$((FAILED_TESTS + 1))
+            fi
+        else
+            # Fallback: check if response contains success string
+            if echo "$CREATE_DEAL_RESPONSE" | grep -q '"success"'; then
+                echo -e "${GREEN}✓ Passed${NC}"
+            else
+                echo -e "${RED}✗ Failed: Deal creation did not return success${NC}"
+                format_json "$CREATE_DEAL_RESPONSE"
+                FAILED_TESTS=$((FAILED_TESTS + 1))
+            fi
+        fi
+    fi
+else
+    echo -e "${RED}✗ Failed${NC}"
+    format_json "$CREATE_DEAL_RESPONSE"
+    FAILED_TESTS=$((FAILED_TESTS + 1))
+fi
+
+# Test 16-18: CRUD operations for Persons
+echo -e "\n${YELLOW}=== Testing Person CRUD Operations ===${NC}"
+
+# Test 16: Create a test person
+echo -e "\n${YELLOW}Test: Create Person${NC}"
+CREATE_PERSON_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"create-person\",\"arguments\":{\"name\":\"Test Person $(date +%s)\"}}" "202")
+if [ $? -eq 0 ] && echo "$CREATE_PERSON_RESPONSE" | grep -q '"result"'; then
+    # Check if there's an error in the response
+    if echo "$CREATE_PERSON_RESPONSE" | grep -q '"isError"'; then
+        echo -e "${RED}✗ Failed: Person creation returned error${NC}"
+        format_json "$CREATE_PERSON_RESPONSE"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    else
+        # Parse the JSON text content to check for success
+        if command -v jq > /dev/null 2>&1; then
+            PERSON_JSON=$(echo "$CREATE_PERSON_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+            SUCCESS=$(echo "$PERSON_JSON" | jq -r '.success // false' 2>/dev/null)
+            if [ "$SUCCESS" = "true" ]; then
+                echo -e "${GREEN}✓ Passed${NC}"
+                CREATED_PERSON_ID=$(echo "$PERSON_JSON" | jq -r '.person.id // empty' 2>/dev/null)
+                echo "Created person ID: ${CREATED_PERSON_ID}"
+                
+                # Test 17: Update the person (if creation succeeded)
+                if [ ! -z "$CREATED_PERSON_ID" ] && [ "$CREATED_PERSON_ID" != "null" ]; then
+                    test_tool_call "Update person $CREATED_PERSON_ID" "update-person" "{\"personId\":${CREATED_PERSON_ID},\"name\":\"Updated Test Person $(date +%s)\"}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+                    
+                    # Test 18: Delete the person
+                    test_tool_call "Delete person $CREATED_PERSON_ID" "delete-person" "{\"personId\":${CREATED_PERSON_ID}}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+                fi
+            else
+                echo -e "${RED}✗ Failed: Person creation did not return success${NC}"
+                format_json "$CREATE_PERSON_RESPONSE"
+                FAILED_TESTS=$((FAILED_TESTS + 1))
+            fi
+        else
+            # Fallback: check if response contains success string
+            if echo "$CREATE_PERSON_RESPONSE" | grep -q '"success"'; then
+                echo -e "${GREEN}✓ Passed${NC}"
+            else
+                echo -e "${RED}✗ Failed: Person creation did not return success${NC}"
+                format_json "$CREATE_PERSON_RESPONSE"
+                FAILED_TESTS=$((FAILED_TESTS + 1))
+            fi
+        fi
+    fi
+else
+    echo -e "${RED}✗ Failed${NC}"
+    format_json "$CREATE_PERSON_RESPONSE"
+    FAILED_TESTS=$((FAILED_TESTS + 1))
+fi
+
+# Test 19-21: CRUD operations for Leads
+echo -e "\n${YELLOW}=== Testing Lead CRUD Operations ===${NC}"
+
+# Test 19: Create a test lead (requires person_id or organization_id)
+echo -e "\n${YELLOW}Test: Create Lead${NC}"
+# Use the person ID from the previous test if available, otherwise create a person first
+if [ ! -z "$CREATED_PERSON_ID" ] && [ "$CREATED_PERSON_ID" != "null" ]; then
+    CREATE_LEAD_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"create-lead\",\"arguments\":{\"title\":\"Test Lead $(date +%s)\",\"personId\":${CREATED_PERSON_ID}}}" "203")
+else
+    # Create a person first if we don't have one
+    echo -e "${YELLOW}Creating a person first for the lead...${NC}"
+    TEMP_PERSON_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"create-person\",\"arguments\":{\"name\":\"Temp Person for Lead $(date +%s)\"}}" "299")
+    if command -v jq > /dev/null 2>&1; then
+        TEMP_PERSON_JSON=$(echo "$TEMP_PERSON_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+        TEMP_PERSON_ID=$(echo "$TEMP_PERSON_JSON" | jq -r '.person.id // empty' 2>/dev/null)
+        if [ ! -z "$TEMP_PERSON_ID" ] && [ "$TEMP_PERSON_ID" != "null" ]; then
+            CREATE_LEAD_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"create-lead\",\"arguments\":{\"title\":\"Test Lead $(date +%s)\",\"personId\":${TEMP_PERSON_ID}}}" "203")
+        else
+            echo -e "${RED}✗ Failed: Could not create person for lead${NC}"
+            CREATE_LEAD_RESPONSE=""
+        fi
+    else
+        echo -e "${YELLOW}⚠ Skipped: jq not available, cannot extract person ID${NC}"
+        CREATE_LEAD_RESPONSE=""
+    fi
+fi
+
+if [ ! -z "$CREATE_LEAD_RESPONSE" ] && [ $? -eq 0 ] && echo "$CREATE_LEAD_RESPONSE" | grep -q '"result"'; then
+    # Check if there's an error in the response
+    if echo "$CREATE_LEAD_RESPONSE" | grep -q '"isError"'; then
+        echo -e "${RED}✗ Failed: Lead creation returned error${NC}"
+        format_json "$CREATE_LEAD_RESPONSE"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    else
+        # Parse the JSON text content to check for success
+        if command -v jq > /dev/null 2>&1; then
+            LEAD_JSON=$(echo "$CREATE_LEAD_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+            SUCCESS=$(echo "$LEAD_JSON" | jq -r '.success // false' 2>/dev/null)
+            if [ "$SUCCESS" = "true" ]; then
+                echo -e "${GREEN}✓ Passed${NC}"
+                CREATED_LEAD_ID=$(echo "$LEAD_JSON" | jq -r '.lead.id // empty' 2>/dev/null)
+                echo "Created lead ID: ${CREATED_LEAD_ID}"
+                
+                # Test 20: Update the lead (if creation succeeded)
+                if [ ! -z "$CREATED_LEAD_ID" ] && [ "$CREATED_LEAD_ID" != "null" ]; then
+                    test_tool_call "Update lead $CREATED_LEAD_ID" "update-lead" "{\"leadId\":\"${CREATED_LEAD_ID}\",\"title\":\"Updated Test Lead $(date +%s)\"}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+                    
+                    # Test 21: Delete the lead
+                    test_tool_call "Delete lead $CREATED_LEAD_ID" "delete-lead" "{\"leadId\":\"${CREATED_LEAD_ID}\"}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+                fi
+            else
+                echo -e "${RED}✗ Failed: Lead creation did not return success${NC}"
+                format_json "$CREATE_LEAD_RESPONSE"
+                FAILED_TESTS=$((FAILED_TESTS + 1))
+            fi
+        else
+            # Fallback: check if response contains success string
+            if echo "$CREATE_LEAD_RESPONSE" | grep -q '"success"'; then
+                echo -e "${GREEN}✓ Passed${NC}"
+            else
+                echo -e "${RED}✗ Failed: Lead creation did not return success${NC}"
+                format_json "$CREATE_LEAD_RESPONSE"
+                FAILED_TESTS=$((FAILED_TESTS + 1))
+            fi
+        fi
+    fi
+else
+    echo -e "${RED}✗ Failed${NC}"
+    if [ ! -z "$CREATE_LEAD_RESPONSE" ]; then
+        format_json "$CREATE_LEAD_RESPONSE"
+    fi
+    FAILED_TESTS=$((FAILED_TESTS + 1))
+fi
+
+# Test 22: Move deal to stage (if we have a deal and stages)
+echo -e "\n${YELLOW}=== Testing Stage Management ===${NC}"
+echo -e "\n${YELLOW}Test: Move Deal to Stage${NC}"
+# First, get a deal and stages
+DEALS_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"get-deals\",\"arguments\":{\"limit\":1}}" "204")
+STAGES_RESPONSE=$(send_mcp_message "tools/call" "{\"name\":\"get-stages\",\"arguments\":{}}" "205")
+
+if [ $? -eq 0 ] && command -v jq > /dev/null 2>&1; then
+    # Extract JSON from responses
+    DEALS_JSON=$(echo "$DEALS_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+    STAGES_JSON=$(echo "$STAGES_RESPONSE" | jq -r '.result.content[0].text' 2>/dev/null)
+    
+    if [ ! -z "$DEALS_JSON" ] && [ ! -z "$STAGES_JSON" ]; then
+        TEST_DEAL_ID=$(echo "$DEALS_JSON" | jq -r '.deals[0].id // empty' 2>/dev/null)
+        FIRST_STAGE_ID=$(echo "$STAGES_JSON" | jq -r '.stages[0].id // empty' 2>/dev/null)
+        
+        if [ ! -z "$TEST_DEAL_ID" ] && [ "$TEST_DEAL_ID" != "null" ] && [ ! -z "$FIRST_STAGE_ID" ] && [ "$FIRST_STAGE_ID" != "null" ]; then
+            test_tool_call "Move deal $TEST_DEAL_ID to stage $FIRST_STAGE_ID" "move-deal-to-stage" "{\"dealId\":${TEST_DEAL_ID},\"stageId\":${FIRST_STAGE_ID}}" || FAILED_TESTS=$((FAILED_TESTS + 1))
+        else
+            echo -e "${YELLOW}⚠ Skipped: Need at least one deal and one stage to test (deal: ${TEST_DEAL_ID:-none}, stage: ${FIRST_STAGE_ID:-none})${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ Skipped: Could not extract JSON from responses${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ Skipped: Could not get deals/stages or jq not available${NC}"
+fi
 
 # Summary
 echo -e "\n${GREEN}=== Test Summary ===${NC}"

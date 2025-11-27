@@ -110,6 +110,7 @@ interface SessionCredentials {
   personsApi: pipedrive.PersonsApi;
   organizationsApi: pipedrive.OrganizationsApi;
   pipelinesApi: pipedrive.PipelinesApi;
+  stagesApi: any;
   itemSearchApi: pipedrive.ItemSearchApi;
   leadsApi: pipedrive.LeadsApi;
   activitiesApi: any;
@@ -140,6 +141,8 @@ function createApiClients(apiToken: string, domain: string): SessionCredentials 
     personsApi: withRateLimit(new pipedrive.PersonsApi(apiClient)),
     organizationsApi: withRateLimit(new pipedrive.OrganizationsApi(apiClient)),
     pipelinesApi: withRateLimit(new pipedrive.PipelinesApi(apiClient)),
+    // @ts-ignore - StagesApi exists but may not be in type definitions
+    stagesApi: withRateLimit(new (pipedrive as any).StagesApi(apiClient)),
     itemSearchApi: withRateLimit(new pipedrive.ItemSearchApi(apiClient)),
     leadsApi: withRateLimit(new pipedrive.LeadsApi(apiClient)),
     // @ts-ignore - ActivitiesApi exists but may not be in type definitions
@@ -634,6 +637,172 @@ server.tool(
   }
 );
 
+// Create deal
+server.tool(
+  "create-deal",
+  "Create a new deal in Pipedrive. Title is required. All other fields are optional.",
+  {
+    title: z.string().describe("Deal title/name (required)"),
+    value: z.number().optional().describe("Deal value amount"),
+    currency: z.string().optional().describe("Currency code (e.g., USD, EUR). Defaults to USD if value is provided without currency."),
+    stageId: z.number().optional().describe("Stage ID for the deal. Use 'get-stages' or 'get-pipeline-stages' to find available stage IDs."),
+    pipelineId: z.number().optional().describe("Pipeline ID for the deal. Use 'get-pipelines' to find available pipeline IDs."),
+    ownerId: z.number().optional().describe("Owner/user ID for the deal. Use 'get-users' to find available user IDs. If not provided, defaults to the user making the request."),
+    personId: z.number().optional().describe("Person ID to associate with the deal. Use 'get-persons' or 'search-persons' to find person IDs."),
+    organizationId: z.number().optional().describe("Organization ID to associate with the deal. Use 'get-organizations' or 'search-organizations' to find organization IDs."),
+    status: z.enum(['open', 'won', 'lost']).optional().describe("Deal status. Defaults to 'open' if not provided."),
+    expectedCloseDate: z.string().optional().describe("Expected close date in ISO 8601 format (YYYY-MM-DD)"),
+    probability: z.number().optional().describe("Deal probability as a percentage (0-100)"),
+    customFields: z.record(z.any()).optional().describe("Custom fields as key-value pairs (use field keys)")
+  },
+  async (params) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      const dealData: any = {
+        title: params.title
+      };
+      
+      if (params.value !== undefined) dealData.value = params.value;
+      if (params.currency) dealData.currency = params.currency;
+      if (params.stageId) dealData.stage_id = params.stageId;
+      if (params.pipelineId) dealData.pipeline_id = params.pipelineId;
+      if (params.ownerId) dealData.user_id = params.ownerId;
+      if (params.personId) dealData.person_id = params.personId;
+      if (params.organizationId) dealData.org_id = params.organizationId;
+      if (params.status) dealData.status = params.status;
+      if (params.expectedCloseDate) dealData.expected_close_date = params.expectedCloseDate;
+      if (params.probability !== undefined) dealData.probability = params.probability;
+      if (params.customFields) {
+        Object.assign(dealData, params.customFields);
+      }
+      
+      // @ts-ignore - addDeal method exists but may not be in type definitions
+      // The API expects the data directly, not wrapped in a body object
+      const response = await credentials.dealsApi.addDeal(dealData);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Deal "${params.title}" created successfully`,
+            deal: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error creating deal:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error creating deal: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Update deal
+server.tool(
+  "update-deal",
+  "Update an existing deal in Pipedrive",
+  {
+    dealId: z.number().describe("Deal ID to update"),
+    title: z.string().optional().describe("Deal title/name"),
+    value: z.number().optional().describe("Deal value"),
+    currency: z.string().optional().describe("Currency code (e.g., USD, EUR)"),
+    stageId: z.number().optional().describe("Stage ID for the deal"),
+    pipelineId: z.number().optional().describe("Pipeline ID for the deal"),
+    ownerId: z.number().optional().describe("Owner/user ID for the deal"),
+    personId: z.number().optional().describe("Person ID to associate with the deal"),
+    organizationId: z.number().optional().describe("Organization ID to associate with the deal"),
+    status: z.enum(['open', 'won', 'lost']).optional().describe("Deal status"),
+    expectedCloseDate: z.string().optional().describe("Expected close date (YYYY-MM-DD format)"),
+    probability: z.number().optional().describe("Deal probability (0-100)"),
+    customFields: z.record(z.any()).optional().describe("Custom fields as key-value pairs (use field keys)")
+  },
+  async (params) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      const dealData: any = {};
+      
+      if (params.title !== undefined) dealData.title = params.title;
+      if (params.value !== undefined) dealData.value = params.value;
+      if (params.currency) dealData.currency = params.currency;
+      if (params.stageId) dealData.stage_id = params.stageId;
+      if (params.pipelineId) dealData.pipeline_id = params.pipelineId;
+      if (params.ownerId) dealData.user_id = params.ownerId;
+      if (params.personId) dealData.person_id = params.personId;
+      if (params.organizationId) dealData.org_id = params.organizationId;
+      if (params.status) dealData.status = params.status;
+      if (params.expectedCloseDate) dealData.expected_close_date = params.expectedCloseDate;
+      if (params.probability !== undefined) dealData.probability = params.probability;
+      if (params.customFields) {
+        Object.assign(dealData, params.customFields);
+      }
+      
+      // @ts-ignore - updateDeal method exists but may not be in type definitions
+      // The API expects id and data as separate parameters or in an object
+      const response = await credentials.dealsApi.updateDeal(params.dealId, dealData);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Deal ${params.dealId} updated successfully`,
+            deal: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error updating deal ${params.dealId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error updating deal ${params.dealId}: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Delete deal
+server.tool(
+  "delete-deal",
+  "Delete a deal from Pipedrive",
+  {
+    dealId: z.number().describe("Deal ID to delete")
+  },
+  async ({ dealId }) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      // @ts-ignore - deleteDeal method exists but may not be in type definitions
+      // The API expects the ID directly
+      const response = await credentials.dealsApi.deleteDeal(dealId);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Deal ${dealId} deleted successfully`,
+            data: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error deleting deal ${dealId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error deleting deal ${dealId}: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
 // Get all persons
 server.tool(
   "get-persons",
@@ -717,6 +886,152 @@ server.tool(
         content: [{
           type: "text",
           text: `Error searching persons: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Create person (contact)
+server.tool(
+  "create-person",
+  "Create a new person (contact) in Pipedrive. Name is required. All other fields are optional.",
+  {
+    name: z.string().describe("Person's full name (required)"),
+    email: z.array(z.string()).optional().describe("Array of email addresses"),
+    phone: z.array(z.string()).optional().describe("Array of phone numbers"),
+    organizationId: z.number().optional().describe("Organization ID to associate with the person. Use 'get-organizations' or 'search-organizations' to find organization IDs."),
+    ownerId: z.number().optional().describe("Owner/user ID for the person. Use 'get-users' to find available user IDs. If not provided, defaults to the user making the request."),
+    visibleTo: z.enum(['1', '3', '5', '7']).optional().describe("Visibility: 1=owner, 3=owner's team, 5=everyone, 7=entire company"),
+    customFields: z.record(z.any()).optional().describe("Custom fields as key-value pairs (use field keys)")
+  },
+  async (params) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      const personData: any = {
+        name: params.name
+      };
+      
+      if (params.email) personData.email = params.email;
+      if (params.phone) personData.phone = params.phone;
+      if (params.organizationId) personData.org_id = params.organizationId;
+      if (params.ownerId) personData.owner_id = params.ownerId;
+      if (params.visibleTo) personData.visible_to = params.visibleTo;
+      if (params.customFields) {
+        Object.assign(personData, params.customFields);
+      }
+      
+      // @ts-ignore - addPerson method exists but may not be in type definitions
+      // The API expects the data directly, not wrapped in a body object
+      const response = await credentials.personsApi.addPerson(personData);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Person "${params.name}" created successfully`,
+            person: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error creating person:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error creating person: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Update person (contact)
+server.tool(
+  "update-person",
+  "Update an existing person (contact) in Pipedrive",
+  {
+    personId: z.number().describe("Person ID to update"),
+    name: z.string().optional().describe("Person's full name"),
+    email: z.array(z.string()).optional().describe("Array of email addresses"),
+    phone: z.array(z.string()).optional().describe("Array of phone numbers"),
+    organizationId: z.number().optional().describe("Organization ID to associate with the person"),
+    ownerId: z.number().optional().describe("Owner/user ID for the person"),
+    visibleTo: z.enum(['1', '3', '5', '7']).optional().describe("Visibility: 1=owner, 3=owner's team, 5=everyone, 7=entire company"),
+    customFields: z.record(z.any()).optional().describe("Custom fields as key-value pairs (use field keys)")
+  },
+  async (params) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      const personData: any = {};
+      
+      if (params.name !== undefined) personData.name = params.name;
+      if (params.email) personData.email = params.email;
+      if (params.phone) personData.phone = params.phone;
+      if (params.organizationId) personData.org_id = params.organizationId;
+      if (params.ownerId) personData.owner_id = params.ownerId;
+      if (params.visibleTo) personData.visible_to = params.visibleTo;
+      if (params.customFields) {
+        Object.assign(personData, params.customFields);
+      }
+      
+      // @ts-ignore - updatePerson method exists but may not be in type definitions
+      // The API expects id and data as separate parameters
+      const response = await credentials.personsApi.updatePerson(params.personId, personData);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Person ${params.personId} updated successfully`,
+            person: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error updating person ${params.personId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error updating person ${params.personId}: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Delete person (contact)
+server.tool(
+  "delete-person",
+  "Delete a person (contact) from Pipedrive",
+  {
+    personId: z.number().describe("Person ID to delete")
+  },
+  async ({ personId }) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      // @ts-ignore - deletePerson method exists but may not be in type definitions
+      // The API expects the ID directly
+      const response = await credentials.personsApi.deletePerson(personId);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Person ${personId} deleted successfully`,
+            data: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error deleting person ${personId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error deleting person ${personId}: ${getErrorMessage(error)}`
         }],
         isError: true
       };
@@ -873,10 +1188,10 @@ server.tool(
   }
 );
 
-// Get all stages
+// Get all stages from all pipelines
 server.tool(
   "get-stages",
-  "Get all stages from Pipedrive",
+  "Get all stages from all pipelines in Pipedrive. Use this to find stage IDs for moving deals between stages.",
   {},
   async () => {
     try {
@@ -889,16 +1204,24 @@ server.tool(
       const allStages = [];
       for (const pipeline of pipelines) {
         try {
-          // @ts-ignore - Type definitions for getPipelineStages are incomplete
-          const stagesResponse = await credentials.pipelinesApi.getPipelineStages(pipeline.id);
+          // @ts-ignore - Type definitions for getStages are incomplete
+          // Use StagesApi to get stages for a pipeline
+          const stagesResponse = await credentials.stagesApi.getStages({ pipeline_id: pipeline.id });
           const stagesData = Array.isArray(stagesResponse?.data)
             ? stagesResponse.data
             : [];
 
           if (stagesData.length > 0) {
             const pipelineStages = stagesData.map((stage: any) => ({
-              ...stage,
-              pipeline_name: pipeline.name
+              id: stage.id,
+              name: stage.name,
+              order_nr: stage.order_nr,
+              deal_probability: stage.deal_probability,
+              pipeline_id: pipeline.id,
+              pipeline_name: pipeline.name,
+              active_flag: stage.active_flag,
+              rotten_flag: stage.rotten_flag,
+              rotten_days: stage.rotten_days
             }));
             allStages.push(...pipelineStages);
           }
@@ -910,7 +1233,10 @@ server.tool(
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(allStages, null, 2)
+          text: JSON.stringify({
+            summary: `Found ${allStages.length} stages across ${pipelines.length} pipeline(s)`,
+            stages: allStages
+          }, null, 2)
         }]
       };
     } catch (error) {
@@ -919,6 +1245,196 @@ server.tool(
         content: [{
           type: "text",
           text: `Error fetching stages: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Get stages for a specific pipeline
+server.tool(
+  "get-pipeline-stages",
+  "Get all stages for a specific pipeline. Use this to find stage IDs for moving deals within a pipeline.",
+  {
+    pipelineId: z.number().describe("Pipeline ID to get stages for")
+  },
+  async ({ pipelineId }) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      
+      // Get pipeline info first
+      let pipelineName = 'Unknown';
+      try {
+        // @ts-ignore - Bypass incorrect TypeScript definition
+        const pipelineResponse = await credentials.pipelinesApi.getPipeline(pipelineId);
+        pipelineName = pipelineResponse.data?.name || 'Unknown';
+      } catch (e) {
+        console.error(`Error fetching pipeline ${pipelineId}:`, e);
+      }
+      
+      // Get stages for this pipeline
+      // @ts-ignore - Type definitions for getStages are incomplete
+      // Use StagesApi to get stages for a pipeline
+      const stagesResponse = await credentials.stagesApi.getStages({ pipeline_id: pipelineId });
+      const stagesData = Array.isArray(stagesResponse?.data)
+        ? stagesResponse.data
+        : [];
+
+      const stages = stagesData.map((stage: any) => ({
+        id: stage.id,
+        name: stage.name,
+        order_nr: stage.order_nr,
+        deal_probability: stage.deal_probability,
+        pipeline_id: pipelineId,
+        pipeline_name: pipelineName,
+        active_flag: stage.active_flag,
+        rotten_flag: stage.rotten_flag,
+        rotten_days: stage.rotten_days
+      }));
+      
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            summary: `Found ${stages.length} stages in pipeline "${pipelineName}"`,
+            pipeline_id: pipelineId,
+            pipeline_name: pipelineName,
+            stages: stages
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error fetching stages for pipeline ${pipelineId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error fetching stages for pipeline ${pipelineId}: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Move deal to a different stage
+server.tool(
+  "move-deal-to-stage",
+  "Move a deal to a different stage in its pipeline. Use 'get-stages' or 'get-pipeline-stages' to find available stage IDs.",
+  {
+    dealId: z.number().describe("Deal ID to move"),
+    stageId: z.number().describe("Target stage ID (use get-stages or get-pipeline-stages to find stage IDs)")
+  },
+  async ({ dealId, stageId }) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      
+      // First, get the current deal to verify it exists and get current stage info
+      let currentDeal: any;
+      try {
+        // @ts-ignore - Bypass incorrect TypeScript definition
+        const dealResponse = await credentials.dealsApi.getDeal(dealId);
+        currentDeal = dealResponse.data;
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: `Error: Deal ${dealId} not found. ${getErrorMessage(error)}`
+          }],
+          isError: true
+        };
+      }
+      
+      // Update the deal with the new stage ID
+      const dealData: any = {
+        stage_id: stageId
+      };
+      
+      // @ts-ignore - updateDeal method exists but may not be in type definitions
+      // The API expects id and data as separate parameters
+      const response = await credentials.dealsApi.updateDeal(dealId, dealData);
+      
+      // Get stage name for better response
+      let stageName = 'Unknown';
+      let pipelineName = 'Unknown';
+      try {
+        if (currentDeal.pipeline_id) {
+          // @ts-ignore - Type definitions for getStages are incomplete
+          // Use StagesApi to get stages for a pipeline
+          const stagesResponse = await credentials.stagesApi.getStages({ pipeline_id: currentDeal.pipeline_id });
+          const stages = Array.isArray(stagesResponse?.data) ? stagesResponse.data : [];
+          const targetStage = stages.find((s: any) => s.id === stageId);
+          if (targetStage) {
+            stageName = targetStage.name;
+          }
+          
+          // Get pipeline name
+          try {
+            // @ts-ignore - Bypass incorrect TypeScript definition
+            const pipelineResponse = await credentials.pipelinesApi.getPipeline(currentDeal.pipeline_id);
+            pipelineName = pipelineResponse.data?.name || 'Unknown';
+          } catch (e) {
+            // Ignore pipeline name fetch error
+          }
+        }
+      } catch (e) {
+        // Ignore stage name fetch error
+      }
+      
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Deal ${dealId} moved to stage "${stageName}" (ID: ${stageId}) in pipeline "${pipelineName}"`,
+            deal_id: dealId,
+            previous_stage_id: currentDeal.stage_id,
+            new_stage_id: stageId,
+            new_stage_name: stageName,
+            pipeline_id: currentDeal.pipeline_id,
+            pipeline_name: pipelineName,
+            deal: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error moving deal ${dealId} to stage ${stageId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error moving deal ${dealId} to stage ${stageId}: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Get lead by ID
+server.tool(
+  "get-lead",
+  "Get a specific lead by ID from Pipedrive",
+  {
+    leadId: z.string().describe("Lead ID (UUID format)")
+  },
+  async ({ leadId }) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      // @ts-ignore - getLead method exists but may not be in type definitions
+      // The API expects the ID directly (as string for leads)
+      const response = await credentials.leadsApi.getLead(leadId);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(response.data, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error fetching lead ${leadId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error fetching lead ${leadId}: ${getErrorMessage(error)}`
         }],
         isError: true
       };
@@ -950,6 +1466,205 @@ server.tool(
         content: [{
           type: "text",
           text: `Error searching leads: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Create lead
+server.tool(
+  "create-lead",
+  "Create a new lead in Pipedrive. A lead must be linked to either a person or organization (at least one is required).",
+  {
+    title: z.string().describe("Lead title/name (required)"),
+    personId: z.number().optional().describe("Person ID to associate with the lead. Required if organizationId is not provided."),
+    organizationId: z.number().optional().describe("Organization ID to associate with the lead. Required if personId is not provided."),
+    ownerId: z.number().optional().describe("Owner/user ID for the lead. If not provided, defaults to the user making the request."),
+    labelIds: z.array(z.string()).optional().describe("Array of label IDs to assign to the lead"),
+    value: z.number().optional().describe("Lead value amount (will be combined with currency into a value object)"),
+    currency: z.string().optional().describe("Currency code (e.g., USD, EUR). If value is provided, currency defaults to USD if not specified."),
+    expectedCloseDate: z.string().optional().describe("Expected close date in ISO 8601 format (YYYY-MM-DD)"),
+    visibleTo: z.enum(['1', '3', '5', '7']).optional().describe("Visibility: 1=owner, 3=owner's team, 5=everyone, 7=entire company"),
+    customFields: z.record(z.any()).optional().describe("Custom fields as key-value pairs (use field keys)")
+  },
+  async (params) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      
+      // Validate that either personId or organizationId is provided (API requirement)
+      if (!params.personId && !params.organizationId) {
+        return {
+          content: [{
+            type: "text",
+            text: "Error creating lead: Either personId or organizationId must be provided. A lead must be linked to at least one person or organization."
+          }],
+          isError: true
+        };
+      }
+      
+      const leadData: any = {
+        title: params.title
+      };
+      
+      if (params.ownerId) leadData.owner_id = params.ownerId;
+      if (params.labelIds) leadData.label_ids = params.labelIds;
+      if (params.personId) leadData.person_id = params.personId;
+      if (params.organizationId) leadData.organization_id = params.organizationId;
+      
+      // Value must be an object with amount and currency according to API docs
+      if (params.value !== undefined || params.currency) {
+        leadData.value = {
+          amount: params.value !== undefined ? params.value : 0,
+          currency: params.currency || 'USD'
+        };
+      }
+      
+      if (params.expectedCloseDate) leadData.expected_close_date = params.expectedCloseDate;
+      if (params.visibleTo) leadData.visible_to = params.visibleTo;
+      if (params.customFields) {
+        Object.assign(leadData, params.customFields);
+      }
+      
+      // @ts-ignore - addLead method exists but may not be in type definitions
+      // The SDK expects the data directly at the top level of the options object
+      // According to Pipedrive API docs: title is required, and either person_id or organization_id is required
+      const response = await credentials.leadsApi.addLead(leadData);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Lead "${params.title}" created successfully`,
+            lead: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error creating lead:`, error);
+      // Try to extract more detailed error information
+      let errorMessage = getErrorMessage(error);
+      if (error && typeof error === 'object' && 'response' in error) {
+        const apiError = error as any;
+        if (apiError.response?.body) {
+          try {
+            const errorBody = typeof apiError.response.body === 'string' 
+              ? JSON.parse(apiError.response.body) 
+              : apiError.response.body;
+            if (errorBody.error) {
+              errorMessage = errorBody.error;
+            } else if (errorBody.error_info) {
+              errorMessage = errorBody.error_info;
+            } else if (errorBody.message) {
+              errorMessage = errorBody.message;
+            }
+          } catch (e) {
+            // If parsing fails, use the original error message
+          }
+        }
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `Error creating lead: ${errorMessage}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Update lead
+server.tool(
+  "update-lead",
+  "Update an existing lead in Pipedrive",
+  {
+    leadId: z.string().describe("Lead ID (UUID format) to update"),
+    title: z.string().optional().describe("Lead title/name"),
+    ownerId: z.number().optional().describe("Owner/user ID for the lead"),
+    labelIds: z.array(z.string()).optional().describe("Array of label IDs to assign to the lead"),
+    personId: z.number().optional().describe("Person ID to associate with the lead"),
+    organizationId: z.number().optional().describe("Organization ID to associate with the lead"),
+    value: z.number().optional().describe("Lead value"),
+    currency: z.string().optional().describe("Currency code (e.g., USD, EUR)"),
+    expectedCloseDate: z.string().optional().describe("Expected close date (YYYY-MM-DD format)"),
+    visibleTo: z.enum(['1', '3', '5', '7']).optional().describe("Visibility: 1=owner, 3=owner's team, 5=everyone, 7=entire company"),
+    customFields: z.record(z.any()).optional().describe("Custom fields as key-value pairs (use field keys)")
+  },
+  async (params) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      const leadData: any = {};
+      
+      if (params.title !== undefined) leadData.title = params.title;
+      if (params.ownerId) leadData.owner_id = params.ownerId;
+      if (params.labelIds) leadData.label_ids = params.labelIds;
+      if (params.personId) leadData.person_id = params.personId;
+      if (params.organizationId) leadData.organization_id = params.organizationId;
+      if (params.value !== undefined) leadData.value = params.value;
+      if (params.currency) leadData.currency = params.currency;
+      if (params.expectedCloseDate) leadData.expected_close_date = params.expectedCloseDate;
+      if (params.visibleTo) leadData.visible_to = params.visibleTo;
+      if (params.customFields) {
+        Object.assign(leadData, params.customFields);
+      }
+      
+      // @ts-ignore - updateLead method exists but may not be in type definitions
+      // The API expects id and data as separate parameters
+      const response = await credentials.leadsApi.updateLead(params.leadId, leadData);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Lead ${params.leadId} updated successfully`,
+            lead: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error updating lead ${params.leadId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error updating lead ${params.leadId}: ${getErrorMessage(error)}`
+        }],
+        isError: true
+      };
+    }
+  }
+);
+
+// Delete lead
+server.tool(
+  "delete-lead",
+  "Delete a lead from Pipedrive",
+  {
+    leadId: z.string().describe("Lead ID (UUID format) to delete")
+  },
+  async ({ leadId }) => {
+    try {
+      const credentials = getCurrentSessionCredentials();
+      // @ts-ignore - deleteLead method exists but may not be in type definitions
+      // The API expects the ID directly
+      const response = await credentials.leadsApi.deleteLead(leadId);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Lead ${leadId} deleted successfully`,
+            data: response.data
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Error deleting lead ${leadId}:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: `Error deleting lead ${leadId}: ${getErrorMessage(error)}`
         }],
         isError: true
       };

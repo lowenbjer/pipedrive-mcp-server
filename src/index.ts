@@ -369,7 +369,7 @@ server.tool(
       } else {
         // Calculate the date filter (daysBack days ago)
         const filterDate = new Date();
-        filterDate.setDate(filterDate.getDate() - daysBack);
+        //filterDate.setDate(filterDate.getDate() - daysBack);
         const startDate = filterDate.toISOString().split('T')[0]; // Format as YYYY-MM-DD
 
         // Build API parameters (using actual Pipedrive API parameter names)

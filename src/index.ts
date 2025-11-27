@@ -1154,31 +1154,13 @@ if (transportType === 'sse' || transportType === 'http') {
     }
 
     if (req.method === 'GET' && url.pathname === '/sse') {
-      const authResult = verifyRequestAuthentication(req);
-      if (!authResult.ok) {
-        res.writeHead(authResult.status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: authResult.message }));
-        return;
-      }
-
-      // Extract credentials from request headers
+      // Extract credentials from request headers (MCP-compliant token:domain format)
       console.error(`[DEBUG] SSE connection request - URL: ${req.url}, method: ${req.method}`);
       const { apiToken, domain } = extractCredentialsFromRequest(req);
       
-      // Establish SSE connection
-      const transport = new SSEServerTransport(endpoint, res);
-      console.error(`[DEBUG] SSE transport created - sessionId: ${transport.sessionId}`);
-
-      // Store credentials for this session if provided
-      if (apiToken && domain) {
-        try {
-          getSessionCredentials(transport.sessionId, apiToken, domain);
-          console.error(`[DEBUG] ✅ Credentials stored for SSE session: ${transport.sessionId} (domain: ${domain})`);
-        } catch (err) {
-          console.error(`[DEBUG] ❌ Failed to store credentials for session ${transport.sessionId}:`, err);
-        }
-      } else {
-        console.error(`[DEBUG] ⚠️  No credentials provided in SSE connection request for session ${transport.sessionId}`);
+      // For SSE mode, credentials are required to establish the connection
+      if (!apiToken || !domain) {
+        console.error(`[DEBUG] ❌ SSE connection rejected: Missing credentials`);
         console.error(`[DEBUG] Available headers: ${JSON.stringify(Object.keys(req.headers))}`);
         // Try to help debug - show if Authorization header exists
         if (req.headers['authorization']) {
@@ -1187,6 +1169,26 @@ if (transportType === 'sse' || transportType === 'http') {
             : req.headers['authorization'];
           console.error(`[DEBUG] Authorization header exists but wasn't parsed. Value: ${authValue.substring(0, 50)}...`);
         }
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          error: 'Missing credentials. MCP-compliant authentication requires Authorization: Bearer token:domain header.' 
+        }));
+        return;
+      }
+      
+      // Establish SSE connection
+      const transport = new SSEServerTransport(endpoint, res);
+      console.error(`[DEBUG] SSE transport created - sessionId: ${transport.sessionId}`);
+
+      // Store credentials for this session
+      try {
+        getSessionCredentials(transport.sessionId, apiToken, domain);
+        console.error(`[DEBUG] ✅ Credentials stored for SSE session: ${transport.sessionId} (domain: ${domain})`);
+      } catch (err) {
+        console.error(`[DEBUG] ❌ Failed to store credentials for session ${transport.sessionId}:`, err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to initialize credentials' }));
+        return;
       }
 
       // Store transport by session ID

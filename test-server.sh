@@ -139,7 +139,7 @@ FAILED_TESTS=0
 # Test 1: Health check
 run_test "Health Check" "${BASE_URL}${HEALTH_ENDPOINT}" "GET" "" "" "200" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
-# Test 2: SSE endpoint without credentials (should fail or work depending on JWT config)
+# Test 2: SSE endpoint without credentials (should fail - credentials required)
 run_test "SSE Endpoint (no credentials)" "${BASE_URL}${SSE_ENDPOINT}" "GET" "-H 'Accept: text/event-stream' --max-time 2" "" "401" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
 # Test 3: SSE endpoint with credentials
@@ -154,7 +154,7 @@ run_test "POST /message (invalid sessionId)" "${BASE_URL}${ENDPOINT}?sessionId=i
 # Test 6: Test with malformed Authorization header
 run_test "SSE Endpoint (malformed auth)" "${BASE_URL}${SSE_ENDPOINT}" "GET" "-H 'Accept: text/event-stream' -H 'Authorization: InvalidFormat' --max-time 2" "" "401" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
-# Test 7: Test with missing colon in token
+# Test 7: Test with missing colon in token (token without domain)
 run_test "SSE Endpoint (missing colon)" "${BASE_URL}${SSE_ENDPOINT}" "GET" "-H 'Accept: text/event-stream' -H 'Authorization: Bearer ${TEST_API_TOKEN}' --max-time 2" "" "401" || FAILED_TESTS=$((FAILED_TESTS + 1))
 
 # Summary

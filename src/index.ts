@@ -1134,7 +1134,9 @@ if (transportType === 'sse' || transportType === 'http') {
   const endpoint = process.env.MCP_ENDPOINT || '/message';
 
   // Store active transports by session ID
-  const transports = new Map<string, SSEServerTransport>();
+  // For SSE mode: SSEServerTransport
+  // For HTTP mode: Simple HTTP transport wrapper
+  const transports = new Map<string, SSEServerTransport | any>();
 
   const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url!, `http://${req.headers.host}`);
@@ -1260,66 +1262,153 @@ if (transportType === 'sse' || transportType === 'http') {
           try {
             await sessionContext.run(httpSessionId, async () => {
               // Parse the MCP JSON-RPC message
-              const message = JSON.parse(body);
+              let message: any;
+              try {
+                message = JSON.parse(body);
+                console.error(`[DEBUG] Parsed MCP message: ${message.method || 'response'} (id: ${message.id || 'none'})`);
+              } catch (parseErr) {
+                console.error('[DEBUG] Failed to parse JSON body:', parseErr);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ 
+                  jsonrpc: '2.0',
+                  id: null,
+                  error: { code: -32700, message: 'Parse error' }
+                }));
+                return;
+              }
               
-              // Use the transport's message handler if available, or handle directly
-              // For HTTP mode, we'll create a temporary transport or handle it differently
-              // Since we can't easily create a transport without SSE, we'll use a workaround
-              // by creating a minimal transport wrapper
+              // For HTTP mode, we need to handle messages directly
+              // Create a simple transport that can send responses back
+              let transport = transports.get(httpSessionId) as any;
               
-              // For HTTP mode, we need to create a transport to handle MCP messages
-              // We reuse the SSE transport infrastructure but without the SSE connection
-              if (!transports.has(httpSessionId)) {
-                // Create a dummy response stream for the transport initialization
-                // The actual response will be written to the real `res` object
-                const dummyRes = {
-                  writeHead: () => {},
-                  write: () => {},
-                  end: () => {},
-                  setHeader: () => {},
-                  headersSent: false
-                } as any;
+              if (!transport) {
+                // Create a simple HTTP transport wrapper that implements the Transport interface
+                const httpTransport = {
+                  sessionId: httpSessionId,
+                  _currentResponse: null as http.ServerResponse | null,
+                  
+                  async start() {
+                    // No-op for HTTP mode
+                    console.error(`[DEBUG] HTTP transport started for session ${httpSessionId}`);
+                  },
+                  
+                  async send(response: any) {
+                    console.error(`[DEBUG] HTTP transport sending response for message ${response.id || 'notification'}`);
+                    // Send response immediately if we have the response object
+                    if (this._currentResponse && !this._currentResponse.headersSent) {
+                      this._currentResponse.writeHead(200, { 'Content-Type': 'application/json' });
+                      this._currentResponse.end(JSON.stringify(response));
+                    } else {
+                      console.error('[DEBUG] Warning: Cannot send response - response object not available or headers already sent');
+                    }
+                  },
+                  
+                  async close() {
+                    // No-op for HTTP mode
+                  },
+                  
+                  onclose: undefined,
+                  onerror: undefined,
+                  onmessage: undefined
+                };
                 
-                const tempTransport = new SSEServerTransport(endpoint, dummyRes);
-                transports.set(httpSessionId, tempTransport);
+                transports.set(httpSessionId, httpTransport);
+                transport = httpTransport;
                 
-                // Connect the server to this transport (only once per session)
-                // Note: This is safe to call multiple times as the server handles it
+                // Connect server to this transport
                 try {
-                  await server.connect(tempTransport);
+                  await server.connect(httpTransport as any);
+                  console.error(`[DEBUG] Server connected to HTTP transport for session ${httpSessionId}`);
                 } catch (err) {
-                  // If already connected, that's fine - continue
-                  if (!err || (err as Error).message?.includes('already connected')) {
-                    // Ignore
+                  console.error(`[DEBUG] Error connecting server to transport:`, err);
+                  // If already connected, that's fine
+                  if (err && (err as Error).message?.includes('already connected')) {
+                    // Continue
                   } else {
                     throw err;
                   }
                 }
               }
               
-              const transport = transports.get(httpSessionId)!;
+              // Store the response object for this request so transport.send() can use it
+              transport._currentResponse = res;
               
-              // Create a request-like object for handlePostMessage
-              const mockReq = {
-                ...req,
-                on: (event: string, handler: Function) => {
-                  if (event === 'data') {
-                    handler(Buffer.from(body));
-                  } else if (event === 'end') {
-                    handler();
+              // Handle the message through the transport's onmessage callback
+              // The server sets this up when we call connect()
+              if (transport.onmessage) {
+                console.error(`[DEBUG] Calling transport.onmessage for ${message.method || 'response'}`);
+                
+                // Process the message - responses will be sent via transport.send()
+                try {
+                  transport.onmessage(message);
+                  
+                  // For requests (with id), wait a bit for the response
+                  // For notifications (no id), we can send accepted immediately
+                  if (message.id !== undefined) {
+                    // Wait for response (with timeout)
+                    await new Promise<void>((resolve) => {
+                      const checkInterval = setInterval(() => {
+                        if (res.headersSent) {
+                          clearInterval(checkInterval);
+                          resolve();
+                        }
+                      }, 10);
+                      
+                      // Timeout after 5 seconds
+                      setTimeout(() => {
+                        clearInterval(checkInterval);
+                        if (!res.headersSent) {
+                          console.error('[DEBUG] Timeout waiting for response, sending 202 Accepted');
+                          res.writeHead(202, { 'Content-Type': 'application/json' });
+                          res.end('Accepted');
+                        }
+                        resolve();
+                      }, 5000);
+                    });
+                  } else {
+                    // Notification - send accepted immediately
+                    if (!res.headersSent) {
+                      res.writeHead(202, { 'Content-Type': 'application/json' });
+                      res.end('Accepted');
+                    }
+                  }
+                } catch (msgErr) {
+                  console.error('[DEBUG] Error processing message:', msgErr);
+                  if (!res.headersSent) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ 
+                      jsonrpc: '2.0',
+                      id: message.id || null,
+                      error: { 
+                        code: -32603, 
+                        message: 'Internal error',
+                        data: msgErr instanceof Error ? msgErr.message : String(msgErr)
+                      }
+                    }));
                   }
                 }
-              } as any;
-              
-              await transport.handlePostMessage(mockReq, res);
+              } else {
+                console.error('[DEBUG] Transport does not have onmessage handler');
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ 
+                  jsonrpc: '2.0',
+                  id: message.id || null,
+                  error: { code: -32603, message: 'Internal error: Transport not properly initialized' }
+                }));
+              }
             });
           } catch (err) {
-            console.error('Error handling HTTP message:', err);
+            console.error('[DEBUG] Error handling HTTP message:', err);
             if (!res.headersSent) {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ 
-                error: 'Internal server error',
-                message: err instanceof Error ? err.message : String(err)
+                jsonrpc: '2.0',
+                id: null,
+                error: {
+                  code: -32603,
+                  message: 'Internal error',
+                  data: err instanceof Error ? err.message : String(err)
+                }
               }));
             }
           }

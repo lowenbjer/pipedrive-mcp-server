@@ -263,6 +263,43 @@ This server is Railway-compatible and can be deployed directly:
 
 The server will use the `PORT` environment variable provided by Railway, making it fully compatible with Railway's deployment platform.
 
+## Testing
+
+### Automated Test Scripts
+
+Two test scripts are provided for local testing:
+
+#### SSE Mode Testing
+```bash
+# Set test credentials (optional, defaults to test values)
+export TEST_API_TOKEN="your-test-token"
+export TEST_DOMAIN="your-test-domain.pipedrive.com"
+
+# Run tests
+./test-server.sh
+# or
+npm run test:server
+```
+
+#### HTTP Mode Testing
+```bash
+# Set test credentials (optional, defaults to test values)
+export TEST_API_TOKEN="your-test-token"
+export TEST_DOMAIN="your-test-domain.pipedrive.com"
+
+# Run tests
+./test-server-http.sh
+```
+
+The test scripts will:
+1. Build the project
+2. Start the server in the background
+3. Run a series of curl tests
+4. Display results
+5. Automatically stop the server
+
+**Note:** These scripts use test credentials by default. For real API testing, set `TEST_API_TOKEN` and `TEST_DOMAIN` environment variables.
+
 ## License
 
 MIT

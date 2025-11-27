@@ -172,6 +172,7 @@ function getSessionCredentials(sessionId: string, apiToken?: string, domain?: st
 }
 
 // Get current session credentials from context
+// For SSE transport, we need to find the session ID from the current async context
 function getCurrentSessionCredentials(): SessionCredentials {
   const sessionId = sessionContext.getStore();
   
@@ -185,6 +186,8 @@ function getCurrentSessionCredentials(): SessionCredentials {
     if (defaultApiToken && defaultDomain) {
       return getSessionCredentials(sessionId, defaultApiToken, defaultDomain);
     }
+    // If we have sessionId but no credentials, that's an error
+    throw new Error(`Session ${sessionId} exists but has no credentials. Provide credentials via Authorization header or X-Pipedrive-API-Token/X-Pipedrive-Domain headers.`);
   }
   
   // Fallback: try stdio session (for stdio transport)
@@ -197,7 +200,12 @@ function getCurrentSessionCredentials(): SessionCredentials {
     return getSessionCredentials('default', defaultApiToken, defaultDomain);
   }
   
-  throw new Error('No session context and no default credentials available. Credentials must be provided via headers (X-Pipedrive-API-Token, X-Pipedrive-Domain) or environment variables (PIPEDRIVE_API_TOKEN, PIPEDRIVE_DOMAIN).');
+  // Last resort: log available sessions for debugging
+  const availableSessions = Array.from(sessions.keys());
+  console.error(`Available sessions: ${availableSessions.join(', ')}`);
+  console.error(`Current context sessionId: ${sessionId || 'none'}`);
+  
+  throw new Error('No session context and no default credentials available. Credentials must be provided via headers (Authorization: Bearer token:domain or X-Pipedrive-API-Token/X-Pipedrive-Domain) or environment variables (PIPEDRIVE_API_TOKEN, PIPEDRIVE_DOMAIN).');
 }
 
 // Extract credentials from request headers (MCP-compliant)
@@ -1106,9 +1114,11 @@ server.prompt(
 );
 
 // Get transport type from environment variable (default to stdio)
+// Store globally so getCurrentSessionCredentials can access it
+// Options: 'stdio', 'sse', 'http'
 const transportType = process.env.MCP_TRANSPORT || 'stdio';
 
-if (transportType === 'sse') {
+if (transportType === 'sse' || transportType === 'http') {
   // SSE transport - create HTTP server
   // Railway provides PORT environment variable, fallback to MCP_PORT or 3000
   const port = parseInt(process.env.PORT || process.env.MCP_PORT || '3000', 10);
@@ -1151,10 +1161,13 @@ if (transportType === 'sse') {
       if (apiToken && domain) {
         try {
           getSessionCredentials(transport.sessionId, apiToken, domain);
-          console.error(`Credentials stored for session: ${transport.sessionId}`);
+          console.error(`Credentials stored for session: ${transport.sessionId} (token: ${apiToken.substring(0, 8)}..., domain: ${domain})`);
         } catch (err) {
           console.error('Failed to store credentials:', err);
         }
+      } else {
+        console.error(`Warning: No credentials provided in SSE connection request for session ${transport.sessionId}`);
+        console.error(`Headers: ${JSON.stringify(Object.keys(req.headers))}`);
       }
 
       // Store transport by session ID
@@ -1185,29 +1198,143 @@ if (transportType === 'sse') {
         return;
       }
 
+      // Extract credentials from request headers (required for HTTP mode, optional for SSE)
+      const { apiToken, domain } = extractCredentialsFromRequest(req);
+      
       // Handle incoming message
       const sessionId = url.searchParams.get('sessionId') || req.headers['x-session-id'] as string;
 
+      // For HTTP mode: credentials are required in every request, sessionId is optional
+      if (transportType === 'http') {
+        if (!apiToken || !domain) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ 
+            error: 'Missing credentials. Provide Authorization: Bearer token:domain or X-Pipedrive-API-Token/X-Pipedrive-Domain headers.' 
+          }));
+          return;
+        }
+        
+        // Create or get session ID for HTTP mode
+        const httpSessionId = sessionId || `http-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+        
+        // Store credentials for this session
+        try {
+          getSessionCredentials(httpSessionId, apiToken, domain);
+        } catch (err) {
+          console.error('Failed to store credentials:', err);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Failed to initialize credentials' }));
+          return;
+        }
+        
+        // For HTTP mode, we need to handle the message without SSE transport
+        // Read the request body and process it
+        let body = '';
+        req.on('data', (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        
+        req.on('end', async () => {
+          try {
+            await sessionContext.run(httpSessionId, async () => {
+              // Parse the MCP JSON-RPC message
+              const message = JSON.parse(body);
+              
+              // Use the transport's message handler if available, or handle directly
+              // For HTTP mode, we'll create a temporary transport or handle it differently
+              // Since we can't easily create a transport without SSE, we'll use a workaround
+              // by creating a minimal transport wrapper
+              
+              // For HTTP mode, we need to create a transport to handle MCP messages
+              // We reuse the SSE transport infrastructure but without the SSE connection
+              if (!transports.has(httpSessionId)) {
+                // Create a dummy response stream for the transport initialization
+                // The actual response will be written to the real `res` object
+                const dummyRes = {
+                  writeHead: () => {},
+                  write: () => {},
+                  end: () => {},
+                  setHeader: () => {},
+                  headersSent: false
+                } as any;
+                
+                const tempTransport = new SSEServerTransport(endpoint, dummyRes);
+                transports.set(httpSessionId, tempTransport);
+                
+                // Connect the server to this transport (only once per session)
+                // Note: This is safe to call multiple times as the server handles it
+                try {
+                  await server.connect(tempTransport);
+                } catch (err) {
+                  // If already connected, that's fine - continue
+                  if (!err || (err as Error).message?.includes('already connected')) {
+                    // Ignore
+                  } else {
+                    throw err;
+                  }
+                }
+              }
+              
+              const transport = transports.get(httpSessionId)!;
+              
+              // Create a request-like object for handlePostMessage
+              const mockReq = {
+                ...req,
+                on: (event: string, handler: Function) => {
+                  if (event === 'data') {
+                    handler(Buffer.from(body));
+                  } else if (event === 'end') {
+                    handler();
+                  }
+                }
+              } as any;
+              
+              await transport.handlePostMessage(mockReq, res);
+            });
+          } catch (err) {
+            console.error('Error handling HTTP message:', err);
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ 
+                error: 'Internal server error',
+                message: err instanceof Error ? err.message : String(err)
+              }));
+            }
+          }
+        });
+        
+        return; // Exit early for HTTP mode
+      }
+      
+      // SSE mode: require sessionId
       if (!sessionId) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing sessionId' }));
+        res.end(JSON.stringify({ error: 'Missing sessionId for SSE mode' }));
         return;
       }
 
       // Extract and update credentials if provided in this request
-      const { apiToken, domain } = extractCredentialsFromRequest(req);
       if (apiToken && domain) {
         try {
           getSessionCredentials(sessionId, apiToken, domain);
+          console.error(`Credentials updated for session: ${sessionId}`);
         } catch (err) {
           console.error('Failed to update credentials:', err);
+        }
+      } else {
+        // If no credentials in this request, check if session already has credentials
+        if (!sessions.has(sessionId)) {
+          console.error(`Warning: No credentials found for session ${sessionId} in POST request`);
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No credentials found for this session' }));
+          return;
         }
       }
 
       const transport = transports.get(sessionId);
       if (!transport) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Session not found' }));
+        res.end(JSON.stringify({ error: 'Session not found. Establish SSE connection first at /sse' }));
         return;
       }
 
@@ -1220,7 +1347,25 @@ if (transportType === 'sse') {
       });
 
       try {
+        // Ensure credentials exist for this session before handling messages
+        if (!sessions.has(sessionId)) {
+          // Try to get credentials from this request
+          const { apiToken, domain } = extractCredentialsFromRequest(req);
+          if (apiToken && domain) {
+            getSessionCredentials(sessionId, apiToken, domain);
+            console.error(`Credentials loaded from POST request for session: ${sessionId}`);
+          } else {
+            console.error(`Error: No credentials found for session ${sessionId} and none provided in POST request`);
+            if (!res.headersSent) {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'No credentials found for this session. Provide credentials via Authorization header.' }));
+            }
+            return;
+          }
+        }
+        
         // Wrap message handling in session context
+        // This ensures tool calls can access the session ID via AsyncLocalStorage
         await sessionContext.run(sessionId, async () => {
           await transport.handlePostMessage(req, res);
         });
@@ -1235,7 +1380,7 @@ if (transportType === 'sse') {
       // Health check endpoint
       if (req.method === 'GET' && url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', transport: 'sse' }));
+        res.end(JSON.stringify({ status: 'ok', transport: transportType }));
         return;
       }
 
@@ -1245,9 +1390,14 @@ if (transportType === 'sse') {
   });
 
   httpServer.listen(port, () => {
-    console.error(`Pipedrive MCP Server (SSE) listening on port ${port}`);
-    console.error(`SSE endpoint: http://localhost:${port}/sse`);
+    console.error(`Pipedrive MCP Server (${transportType.toUpperCase()}) listening on port ${port}`);
+    if (transportType === 'sse') {
+      console.error(`SSE endpoint: http://localhost:${port}/sse`);
+    }
     console.error(`Message endpoint: http://localhost:${port}${endpoint}`);
+    if (transportType === 'http') {
+      console.error(`HTTP mode: POST directly to ${endpoint} with credentials in headers`);
+    }
   });
 } else {
   // Default: stdio transport

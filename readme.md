@@ -170,10 +170,10 @@ Optional (Rate Limiting):
 - `PIPEDRIVE_RATE_LIMIT_MAX_CONCURRENT` - Maximum concurrent requests (default: 2)
 
 Optional (Transport Configuration):
-- `MCP_TRANSPORT` - Transport type: `stdio` (default, for local use) or `sse` (for Docker/HTTP access)
-- `PORT` - Port for SSE transport (Railway-compatible, defaults to `MCP_PORT` or 3000, only used when `MCP_TRANSPORT=sse`)
-- `MCP_PORT` - Port for SSE transport (default: 3000, only used when `MCP_TRANSPORT=sse`, overridden by `PORT`)
-- `MCP_ENDPOINT` - Message endpoint path for SSE (default: /message, only used when `MCP_TRANSPORT=sse`)
+- `MCP_TRANSPORT` - Transport type: `stdio` (default, for local use), `sse` (for SSE/HTTP access with persistent connections), or `http` (for stateless HTTP requests)
+- `PORT` - Port for HTTP/SSE transport (Railway-compatible, defaults to `MCP_PORT` or 3000, only used when `MCP_TRANSPORT=sse` or `http`)
+- `MCP_PORT` - Port for HTTP/SSE transport (default: 3000, only used when `MCP_TRANSPORT=sse` or `http`, overridden by `PORT`)
+- `MCP_ENDPOINT` - Message endpoint path (default: /message, only used when `MCP_TRANSPORT=sse` or `http`)
 
 ## Using with Claude
 
@@ -201,8 +201,18 @@ Optional (Transport Configuration):
 
 ### For HTTP/SSE transport (MCP-compliant)
 
-When using HTTP/SSE transport, configure your MCP client with:
+#### SSE Mode (`MCP_TRANSPORT=sse`)
+For persistent connections with Server-Sent Events:
+1. Connect to `/sse` endpoint to establish a session
+2. POST to `/message` endpoint with the sessionId
+3. Credentials can be provided once during SSE connection
 
+#### HTTP Mode (`MCP_TRANSPORT=http`)
+For stateless HTTP requests (simpler, no SSE connection needed):
+1. POST directly to `/message` endpoint
+2. Credentials must be provided in every request
+
+**Configuration:**
 - **Transport**: `http` or `sse`
 - **URL**: `https://your-server.com/message` (or your Railway deployment URL)
 - **With Auth Setup**: Enabled

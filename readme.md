@@ -22,11 +22,12 @@ This is a Model Context Protocol (MCP) server that connects to the Pipedrive API
    ```
    npm install
    ```
-3. Create a `.env` file in the root directory with your configuration:
+3. (Optional) Create a `.env` file in the root directory with default configuration:
    ```
    PIPEDRIVE_API_TOKEN=your_api_token_here
    PIPEDRIVE_DOMAIN=your-company.pipedrive.com
    ```
+   Note: Credentials can also be provided dynamically via request headers (see Authentication section below).
 4. Build the project:
    ```
    npm run build
@@ -114,11 +115,46 @@ services:
 
 Then add the required environment variables to your `.env` file.
 
+### Authentication
+
+This MCP server supports **dynamic token-based authentication** (MCP-compliant). Credentials can be provided in two ways:
+
+#### 1. Request Headers (MCP-Compliant for HTTP/SSE transport)
+
+When using HTTP/SSE transport, provide credentials via the `Authorization` header (MCP-compliant):
+
+**Primary method (MCP-compliant):**
+```
+Authorization: Bearer <base64(apiToken:domain)>
+```
+
+Or plain format:
+```
+Authorization: Bearer <apiToken>:<domain>
+```
+
+**Fallback method (for compatibility):**
+- `X-Pipedrive-API-Token` or `X-API-Token` - Your Pipedrive API token
+- `X-Pipedrive-Domain` or `X-Domain` - Your Pipedrive domain (e.g., `your-company.pipedrive.com`)
+
+The server prioritizes the `Authorization` header per MCP specification, then falls back to custom headers if not provided.
+
+Credentials are stored per-session, so each connection can use different credentials.
+
+#### 2. Environment Variables (Fallback)
+
+For backward compatibility or stdio transport, you can set default credentials:
+
+- `PIPEDRIVE_API_TOKEN` - Your Pipedrive API token (optional)
+- `PIPEDRIVE_DOMAIN` - Your Pipedrive domain (e.g., `your-company.pipedrive.com`) (optional)
+
+If credentials are not provided via headers, the server will fall back to environment variables. If neither is provided, requests will fail with an error.
+
 ### Environment Variables
 
-Required:
-- `PIPEDRIVE_API_TOKEN` - Your Pipedrive API token
-- `PIPEDRIVE_DOMAIN` - Your Pipedrive domain (e.g., `your-company.pipedrive.com`)
+Optional (Default Credentials - for backward compatibility):
+- `PIPEDRIVE_API_TOKEN` - Default Pipedrive API token (used if not provided in headers)
+- `PIPEDRIVE_DOMAIN` - Default Pipedrive domain (used if not provided in headers)
 
 Optional (JWT Authentication):
 - `MCP_JWT_SECRET` - JWT secret for authentication
@@ -135,12 +171,13 @@ Optional (Rate Limiting):
 
 Optional (Transport Configuration):
 - `MCP_TRANSPORT` - Transport type: `stdio` (default, for local use) or `sse` (for Docker/HTTP access)
-- `MCP_PORT` - Port for SSE transport (default: 3000, only used when `MCP_TRANSPORT=sse`)
+- `PORT` - Port for SSE transport (Railway-compatible, defaults to `MCP_PORT` or 3000, only used when `MCP_TRANSPORT=sse`)
+- `MCP_PORT` - Port for SSE transport (default: 3000, only used when `MCP_TRANSPORT=sse`, overridden by `PORT`)
 - `MCP_ENDPOINT` - Message endpoint path for SSE (default: /message, only used when `MCP_TRANSPORT=sse`)
 
 ## Using with Claude
 
-To use this server with Claude for Desktop:
+### For Claude Desktop (stdio transport)
 
 1. Configure Claude for Desktop by editing your `claude_desktop_config.json`:
 
@@ -161,6 +198,30 @@ To use this server with Claude for Desktop:
 
 2. Restart Claude for Desktop
 3. In the Claude application, you should now see the Pipedrive tools available
+
+### For HTTP/SSE transport (MCP-compliant)
+
+When using HTTP/SSE transport, configure your MCP client with:
+
+- **Transport**: `http` or `sse`
+- **URL**: `https://your-server.com/message` (or your Railway deployment URL)
+- **With Auth Setup**: Enabled
+- **API Key**: Use one of these formats:
+  - **Plain format**: `your-api-token:your-domain` (e.g., `abc123:mycompany.pipedrive.com`)
+  - **Base64 format**: Base64 encode `token:domain` (e.g., `echo -n "abc123:mycompany.pipedrive.com" | base64`)
+
+**Example:**
+If your API token is `abc123xyz` and domain is `mycompany.pipedrive.com`, send:
+```
+Bearer abc123xyz:mycompany.pipedrive.com
+```
+
+Or base64 encoded:
+```
+Bearer YWJjMTIzeHl6Om15Y29tcGFueS5waXBlZHJpdmUuY29t
+```
+
+See [AUTHENTICATION.md](./AUTHENTICATION.md) for detailed authentication guide.
 
 ## Available Tools
 
@@ -191,6 +252,21 @@ To use this server with Claude for Desktop:
 - `analyze-leads`: Analyze leads by status
 - `compare-pipelines`: Compare different pipelines and their stages
 - `find-high-value-deals`: Find high-value deals
+
+## Railway Deployment
+
+This server is Railway-compatible and can be deployed directly:
+
+1. Connect your GitHub repository to Railway
+2. Railway will automatically detect the Node.js project and build it
+3. Set environment variables in Railway dashboard (optional, for default credentials):
+   - `PIPEDRIVE_API_TOKEN` (optional)
+   - `PIPEDRIVE_DOMAIN` (optional)
+   - `MCP_TRANSPORT=sse` (required for HTTP access)
+4. Railway will automatically set the `PORT` environment variable
+5. Your server will be available at the Railway-provided URL
+
+The server will use the `PORT` environment variable provided by Railway, making it fully compatible with Railway's deployment platform.
 
 ## License
 

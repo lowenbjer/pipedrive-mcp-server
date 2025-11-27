@@ -7,6 +7,7 @@ import * as dotenv from 'dotenv';
 import Bottleneck from 'bottleneck';
 import jwt from 'jsonwebtoken';
 import http from 'http';
+import { AsyncLocalStorage } from 'async_hooks';
 
 // Type for error handling
 interface ErrorWithMessage {
@@ -32,16 +33,10 @@ function getErrorMessage(error: unknown): string {
 // Load environment variables
 dotenv.config();
 
-// Check for required environment variables
-if (!process.env.PIPEDRIVE_API_TOKEN) {
-  console.error("ERROR: PIPEDRIVE_API_TOKEN environment variable is required");
-  process.exit(1);
-}
-
-if (!process.env.PIPEDRIVE_DOMAIN) {
-  console.error("ERROR: PIPEDRIVE_DOMAIN environment variable is required (e.g., 'ukkofi.pipedrive.com')");
-  process.exit(1);
-}
+// Credentials are now optional at startup - they'll be provided per-request
+// Fallback to environment variables for backward compatibility
+const defaultApiToken = process.env.PIPEDRIVE_API_TOKEN;
+const defaultDomain = process.env.PIPEDRIVE_DOMAIN;
 
 const jwtSecret = process.env.MCP_JWT_SECRET;
 const jwtAlgorithm = (process.env.MCP_JWT_ALGORITHM || 'HS256') as jwt.Algorithm;
@@ -106,30 +101,159 @@ const withRateLimit = <T extends object>(client: T): T => {
   });
 };
 
-// Initialize Pipedrive API client with API token and custom domain
-const apiClient = new pipedrive.ApiClient();
-apiClient.basePath = `https://${process.env.PIPEDRIVE_DOMAIN}/api/v1`;
-apiClient.authentications = apiClient.authentications || {};
-apiClient.authentications['api_key'] = {
-  type: 'apiKey',
-  'in': 'query',
-  name: 'api_token',
-  apiKey: process.env.PIPEDRIVE_API_TOKEN
-};
+// Session storage for credentials and API clients
+interface SessionCredentials {
+  apiToken: string;
+  domain: string;
+  apiClient: pipedrive.ApiClient;
+  dealsApi: pipedrive.DealsApi;
+  personsApi: pipedrive.PersonsApi;
+  organizationsApi: pipedrive.OrganizationsApi;
+  pipelinesApi: pipedrive.PipelinesApi;
+  itemSearchApi: pipedrive.ItemSearchApi;
+  leadsApi: pipedrive.LeadsApi;
+  activitiesApi: any;
+  notesApi: any;
+  usersApi: any;
+}
 
-// Initialize Pipedrive API clients
-const dealsApi = withRateLimit(new pipedrive.DealsApi(apiClient));
-const personsApi = withRateLimit(new pipedrive.PersonsApi(apiClient));
-const organizationsApi = withRateLimit(new pipedrive.OrganizationsApi(apiClient));
-const pipelinesApi = withRateLimit(new pipedrive.PipelinesApi(apiClient));
-const itemSearchApi = withRateLimit(new pipedrive.ItemSearchApi(apiClient));
-const leadsApi = withRateLimit(new pipedrive.LeadsApi(apiClient));
-// @ts-ignore - ActivitiesApi exists but may not be in type definitions
-const activitiesApi = withRateLimit(new pipedrive.ActivitiesApi(apiClient));
-// @ts-ignore - NotesApi exists but may not be in type definitions
-const notesApi = withRateLimit(new pipedrive.NotesApi(apiClient));
-// @ts-ignore - UsersApi exists but may not be in type definitions
-const usersApi = withRateLimit(new pipedrive.UsersApi(apiClient));
+const sessions = new Map<string, SessionCredentials>();
+const sessionContext = new AsyncLocalStorage<string>();
+
+// Create API clients for a given session
+function createApiClients(apiToken: string, domain: string): SessionCredentials {
+  const apiClient = new pipedrive.ApiClient();
+  apiClient.basePath = `https://${domain}/api/v1`;
+  apiClient.authentications = apiClient.authentications || {};
+  apiClient.authentications['api_key'] = {
+    type: 'apiKey',
+    'in': 'query',
+    name: 'api_token',
+    apiKey: apiToken
+  };
+
+  return {
+    apiToken,
+    domain,
+    apiClient,
+    dealsApi: withRateLimit(new pipedrive.DealsApi(apiClient)),
+    personsApi: withRateLimit(new pipedrive.PersonsApi(apiClient)),
+    organizationsApi: withRateLimit(new pipedrive.OrganizationsApi(apiClient)),
+    pipelinesApi: withRateLimit(new pipedrive.PipelinesApi(apiClient)),
+    itemSearchApi: withRateLimit(new pipedrive.ItemSearchApi(apiClient)),
+    leadsApi: withRateLimit(new pipedrive.LeadsApi(apiClient)),
+    activitiesApi: withRateLimit(new pipedrive.ActivitiesApi(apiClient)),
+    notesApi: withRateLimit(new pipedrive.NotesApi(apiClient)),
+    usersApi: withRateLimit(new pipedrive.UsersApi(apiClient)),
+  };
+}
+
+// Get or create session credentials
+function getSessionCredentials(sessionId: string, apiToken?: string, domain?: string): SessionCredentials {
+  // Try to get existing session
+  if (sessions.has(sessionId)) {
+    return sessions.get(sessionId)!;
+  }
+
+  // Use provided credentials or fall back to defaults
+  const token = apiToken || defaultApiToken;
+  const dom = domain || defaultDomain;
+
+  if (!token || !dom) {
+    throw new Error('Pipedrive API credentials are required. Provide X-Pipedrive-API-Token and X-Pipedrive-Domain headers, or set PIPEDRIVE_API_TOKEN and PIPEDRIVE_DOMAIN environment variables.');
+  }
+
+  const credentials = createApiClients(token, dom);
+  sessions.set(sessionId, credentials);
+  return credentials;
+}
+
+// Get current session credentials from context
+function getCurrentSessionCredentials(): SessionCredentials {
+  const sessionId = sessionContext.getStore();
+  
+  // If we have a session ID from context, use it
+  if (sessionId) {
+    const existing = sessions.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+    // Try to create with defaults if session exists but credentials not stored
+    if (defaultApiToken && defaultDomain) {
+      return getSessionCredentials(sessionId, defaultApiToken, defaultDomain);
+    }
+  }
+  
+  // Fallback: try stdio session (for stdio transport)
+  if (sessions.has('stdio')) {
+    return sessions.get('stdio')!;
+  }
+  
+  // Fallback: use default credentials
+  if (defaultApiToken && defaultDomain) {
+    return getSessionCredentials('default', defaultApiToken, defaultDomain);
+  }
+  
+  throw new Error('No session context and no default credentials available. Credentials must be provided via headers (X-Pipedrive-API-Token, X-Pipedrive-Domain) or environment variables (PIPEDRIVE_API_TOKEN, PIPEDRIVE_DOMAIN).');
+}
+
+// Extract credentials from request headers (MCP-compliant)
+// MCP spec prefers Authorization header with Bearer token
+// 
+// Supported formats:
+// 1. Authorization: Bearer <apiToken>:<domain> (plain format)
+// 2. Authorization: Bearer <base64(apiToken:domain)> (base64 encoded)
+// 3. Authorization: Bearer <apiToken> + X-Pipedrive-Domain header
+// 4. X-Pipedrive-API-Token + X-Pipedrive-Domain headers (fallback)
+function extractCredentialsFromRequest(req: http.IncomingMessage): { apiToken?: string; domain?: string } {
+  let apiToken: string | undefined;
+  let domain: string | undefined;
+  
+  // Primary: Check Authorization header (MCP-compliant approach)
+  const authHeader = req.headers['authorization'];
+  if (authHeader) {
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (match) {
+      const token = match[1];
+      
+      // Try to parse as "token:domain" format (both base64 and plain)
+      let decoded: string | null = null;
+      
+      // First, try base64 decode
+      try {
+        decoded = Buffer.from(token, 'base64').toString('utf-8');
+      } catch {
+        // Not base64, use as-is
+        decoded = token;
+      }
+      
+      // Check if decoded value contains colon (token:domain format)
+      if (decoded && decoded.includes(':')) {
+        const parts = decoded.split(':');
+        if (parts.length >= 2) {
+          apiToken = parts[0];
+          domain = parts.slice(1).join(':'); // Handle domains with colons (unlikely but safe)
+        }
+      } else {
+        // Just the token, domain must be in a separate header
+        apiToken = decoded;
+      }
+    }
+  }
+  
+  // Fallback: Check custom headers (for compatibility)
+  // These can also supplement Authorization header if domain wasn't found there
+  if (!apiToken) {
+    apiToken = req.headers['x-pipedrive-api-token'] as string || 
+               req.headers['x-api-token'] as string;
+  }
+  if (!domain) {
+    domain = req.headers['x-pipedrive-domain'] as string ||
+             req.headers['x-domain'] as string;
+  }
+  
+  return { apiToken, domain };
+}
 
 // Create MCP server
 const server = new McpServer({
@@ -151,7 +275,8 @@ server.tool(
   {},
   async () => {
     try {
-      const response = await usersApi.getUsers();
+      const credentials = getCurrentSessionCredentials();
+      const response = await credentials.usersApi.getUsers();
       const users = response.data?.map((user: any) => ({
         id: user.id,
         name: user.name,
@@ -211,10 +336,12 @@ server.tool(
     try {
       let filteredDeals: any[] = [];
 
+      const credentials = getCurrentSessionCredentials();
+      
       // If searching by title, use the search API first
       if (searchTitle) {
         // @ts-ignore - Bypass incorrect TypeScript definition
-        const searchResponse = await dealsApi.searchDeals(searchTitle);
+        const searchResponse = await credentials.dealsApi.searchDeals(searchTitle);
         filteredDeals = searchResponse.data || [];
       } else {
         // Calculate the date filter (daysBack days ago)
@@ -236,7 +363,7 @@ server.tool(
 
         // Fetch deals with filters
         // @ts-ignore - getDeals accepts parameters but types may be incomplete
-        const response = await dealsApi.getDeals(params);
+        const response = await credentials.dealsApi.getDeals(params);
         filteredDeals = response.data || [];
       }
 
@@ -364,8 +491,9 @@ server.tool(
   },
   async ({ dealId }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition, API expects just the ID
-      const response = await dealsApi.getDeal(dealId);
+      const response = await credentials.dealsApi.getDeal(dealId);
       return {
         content: [{
           type: "text",
@@ -401,10 +529,12 @@ server.tool(
         booking_details: null
       };
 
+      const credentials = getCurrentSessionCredentials();
+      
       // Get deal details including custom fields
       try {
         // @ts-ignore - Bypass incorrect TypeScript definition
-        const dealResponse = await dealsApi.getDeal(dealId);
+        const dealResponse = await credentials.dealsApi.getDeal(dealId);
         const deal = dealResponse.data;
 
         // Extract custom booking field
@@ -421,7 +551,7 @@ server.tool(
       try {
         // @ts-ignore - API parameters may not be fully typed
         // @ts-ignore - Bypass incorrect TypeScript definition
-        const notesResponse = await notesApi.getNotes({
+        const notesResponse = await credentials.notesApi.getNotes({
           deal_id: dealId,
           limit: limit
         });
@@ -462,8 +592,9 @@ server.tool(
   },
   async ({ term }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
-      const response = await dealsApi.searchDeals(term);
+      const response = await credentials.dealsApi.searchDeals(term);
       return {
         content: [{
           type: "text",
@@ -490,7 +621,8 @@ server.tool(
   {},
   async () => {
     try {
-      const response = await personsApi.getPersons();
+      const credentials = getCurrentSessionCredentials();
+      const response = await credentials.personsApi.getPersons();
       return {
         content: [{
           type: "text",
@@ -519,8 +651,9 @@ server.tool(
   },
   async ({ personId }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
-      const response = await personsApi.getPerson(personId);
+      const response = await credentials.personsApi.getPerson(personId);
       return {
         content: [{
           type: "text",
@@ -549,8 +682,9 @@ server.tool(
   },
   async ({ term }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
-      const response = await personsApi.searchPersons(term);
+      const response = await credentials.personsApi.searchPersons(term);
       return {
         content: [{
           type: "text",
@@ -577,7 +711,8 @@ server.tool(
   {},
   async () => {
     try {
-      const response = await organizationsApi.getOrganizations();
+      const credentials = getCurrentSessionCredentials();
+      const response = await credentials.organizationsApi.getOrganizations();
       return {
         content: [{
           type: "text",
@@ -606,8 +741,9 @@ server.tool(
   },
   async ({ organizationId }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
-      const response = await organizationsApi.getOrganization(organizationId);
+      const response = await credentials.organizationsApi.getOrganization(organizationId);
       return {
         content: [{
           type: "text",
@@ -636,8 +772,9 @@ server.tool(
   },
   async ({ term }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - API method exists but TypeScript definition is wrong
-      const response = await (organizationsApi as any).searchOrganization({ term });
+      const response = await (credentials.organizationsApi as any).searchOrganization({ term });
       return {
         content: [{
           type: "text",
@@ -664,7 +801,8 @@ server.tool(
   {},
   async () => {
     try {
-      const response = await pipelinesApi.getPipelines();
+      const credentials = getCurrentSessionCredentials();
+      const response = await credentials.pipelinesApi.getPipelines();
       return {
         content: [{
           type: "text",
@@ -693,8 +831,9 @@ server.tool(
   },
   async ({ pipelineId }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
-      const response = await pipelinesApi.getPipeline(pipelineId);
+      const response = await credentials.pipelinesApi.getPipeline(pipelineId);
       return {
         content: [{
           type: "text",
@@ -721,8 +860,9 @@ server.tool(
   {},
   async () => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // Since the stages are related to pipelines, we'll get all pipelines first
-      const pipelinesResponse = await pipelinesApi.getPipelines();
+      const pipelinesResponse = await credentials.pipelinesApi.getPipelines();
       const pipelines = pipelinesResponse.data || [];
       
       // For each pipeline, fetch its stages
@@ -730,7 +870,7 @@ server.tool(
       for (const pipeline of pipelines) {
         try {
           // @ts-ignore - Type definitions for getPipelineStages are incomplete
-          const stagesResponse = await pipelinesApi.getPipelineStages(pipeline.id);
+          const stagesResponse = await credentials.pipelinesApi.getPipelineStages(pipeline.id);
           const stagesData = Array.isArray(stagesResponse?.data)
             ? stagesResponse.data
             : [];
@@ -775,8 +915,9 @@ server.tool(
   },
   async ({ term }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       // @ts-ignore - Bypass incorrect TypeScript definition
-      const response = await leadsApi.searchLeads(term);
+      const response = await credentials.leadsApi.searchLeads(term);
       return {
         content: [{
           type: "text",
@@ -806,8 +947,9 @@ server.tool(
   },
   async ({ term, itemTypes }) => {
     try {
+      const credentials = getCurrentSessionCredentials();
       const itemType = itemTypes; // Just rename the parameter
-      const response = await itemSearchApi.searchItem({ 
+      const response = await credentials.itemSearchApi.searchItem({ 
         term,
         itemType 
       });
@@ -965,7 +1107,8 @@ const transportType = process.env.MCP_TRANSPORT || 'stdio';
 
 if (transportType === 'sse') {
   // SSE transport - create HTTP server
-  const port = parseInt(process.env.MCP_PORT || '3000', 10);
+  // Railway provides PORT environment variable, fallback to MCP_PORT or 3000
+  const port = parseInt(process.env.PORT || process.env.MCP_PORT || '3000', 10);
   const endpoint = process.env.MCP_ENDPOINT || '/message';
 
   // Store active transports by session ID
@@ -977,7 +1120,8 @@ if (transportType === 'sse') {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Id');
+    // MCP-compliant: Authorization header is primary, custom headers for fallback
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Id, X-Pipedrive-API-Token, X-Pipedrive-Domain, X-API-Token, X-Domain');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -993,9 +1137,22 @@ if (transportType === 'sse') {
         return;
       }
 
+      // Extract credentials from request headers
+      const { apiToken, domain } = extractCredentialsFromRequest(req);
+      
       // Establish SSE connection
       console.error('New SSE connection request');
       const transport = new SSEServerTransport(endpoint, res);
+
+      // Store credentials for this session if provided
+      if (apiToken && domain) {
+        try {
+          getSessionCredentials(transport.sessionId, apiToken, domain);
+          console.error(`Credentials stored for session: ${transport.sessionId}`);
+        } catch (err) {
+          console.error('Failed to store credentials:', err);
+        }
+      }
 
       // Store transport by session ID
       transports.set(transport.sessionId, transport);
@@ -1003,14 +1160,19 @@ if (transportType === 'sse') {
       transport.onclose = () => {
         console.error(`SSE connection closed: ${transport.sessionId}`);
         transports.delete(transport.sessionId);
+        sessions.delete(transport.sessionId);
       };
 
       try {
-        await server.connect(transport);
+        // Wrap server connection in session context
+        await sessionContext.run(transport.sessionId, async () => {
+          await server.connect(transport);
+        });
         console.error(`SSE connection established: ${transport.sessionId}`);
       } catch (err) {
         console.error('Failed to establish SSE connection:', err);
         transports.delete(transport.sessionId);
+        sessions.delete(transport.sessionId);
       }
     } else if (req.method === 'POST' && url.pathname === endpoint) {
       const authResult = verifyRequestAuthentication(req);
@@ -1029,6 +1191,16 @@ if (transportType === 'sse') {
         return;
       }
 
+      // Extract and update credentials if provided in this request
+      const { apiToken, domain } = extractCredentialsFromRequest(req);
+      if (apiToken && domain) {
+        try {
+          getSessionCredentials(sessionId, apiToken, domain);
+        } catch (err) {
+          console.error('Failed to update credentials:', err);
+        }
+      }
+
       const transport = transports.get(sessionId);
       if (!transport) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1045,7 +1217,10 @@ if (transportType === 'sse') {
       });
 
       try {
-        await transport.handlePostMessage(req, res);
+        // Wrap message handling in session context
+        await sessionContext.run(sessionId, async () => {
+          await transport.handlePostMessage(req, res);
+        });
       } catch (err) {
         console.error('Error handling POST message:', err);
         if (!res.headersSent) {
@@ -1073,8 +1248,24 @@ if (transportType === 'sse') {
   });
 } else {
   // Default: stdio transport
+  // For stdio, initialize default credentials if available
+  if (defaultApiToken && defaultDomain) {
+    try {
+      getSessionCredentials('stdio', defaultApiToken, defaultDomain);
+      console.error("Default credentials initialized for stdio transport");
+    } catch (err) {
+      console.error("Failed to initialize default credentials:", err);
+    }
+  } else {
+    console.error("Warning: No default credentials found. Tools will fail unless credentials are provided via other means.");
+  }
+
   const transport = new StdioServerTransport();
-  server.connect(transport).catch(err => {
+  
+  // Wrap server connection in session context for stdio
+  sessionContext.run('stdio', async () => {
+    await server.connect(transport);
+  }).catch(err => {
     console.error("Failed to start MCP server:", err);
     process.exit(1);
   });
